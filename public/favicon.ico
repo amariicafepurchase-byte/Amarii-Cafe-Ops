@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#09090b" rx="100"/>
+  <rect x="24" y="24" width="464" height="464" fill="none" stroke="#ffffff" stroke-width="12" rx="80"/>
+  
+  <!-- Coffee Cup & Clipboard Graphic -->
+  <path d="M140 180h200v130c0 40-35 70-80 70h-40c-45 0-80-30-80-70V180z" fill="#ffffff"/>
+  <path d="M340 210h35c20 0 35 15 35 35s-15 35-35 35h-35v-70z" fill="none" stroke="#ffffff" stroke-width="20" stroke-linecap="round"/>
+  
+  <!-- Steam lines -->
+  <path d="M200 130c0-20 15-30 15-45" stroke="#ef4444" stroke-width="16" stroke-linecap="round" fill="none"/>
+  <path d="M240 120c0-20 15-30 15-45" stroke="#ffffff" stroke-width="16" stroke-linecap="round" fill="none"/>
+  <path d="M280 130c0-20 15-30 15-45" stroke="#ef4444" stroke-width="16" stroke-linecap="round" fill="none"/>
+
+  <!-- Checkmark Badge -->
+  <circle cx="360" cy="360" r="60" fill="#ef4444"/>
+  <path d="M335 360l18 18 35-35" stroke="#000000" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

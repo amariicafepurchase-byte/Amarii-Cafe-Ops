@@ -1,0 +1,6 @@
+{
+  "name": "Amarii Cafe Ops",
+  "description": "Android-ready task tracker, staff assignment, and operations manager for Amarii Cafe.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

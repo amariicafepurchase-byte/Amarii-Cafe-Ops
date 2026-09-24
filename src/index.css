@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+@layer base {
+  html, body {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    overscroll-behavior-y: none;
+    touch-action: manipulation;
+    background-color: #0d1711;
+  }
+
+  /* Smooth momentum scrolling for Android & Touch */
+  * {
+    -webkit-overflow-scrolling: touch;
+  }
+
+/* Universal modern slim scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #244332;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #366149;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #244332 transparent;
+}
+
+  /* Hide scrollbar for clean horizontal chip bars */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* High-Contrast Light Mode (Bright Kitchen Environment) */
+html.theme-light,
+body.theme-light {
+  background-color: #EEF2ED !important;
+  color: #0A120D !important;
+}
+
+.theme-light ::-webkit-scrollbar-thumb {
+  background: #A6BBA0;
+}
+
+.theme-light ::-webkit-scrollbar-thumb:hover {
+  background: #6E8867;
+}
+
+.theme-light * {
+  scrollbar-color: #A6BBA0 transparent;
+}
+
+/* Modal and dialog scroll containment */
+.modal-scroll-area {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+
+/* Android Safe Area insets */
+.safe-bottom {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+.safe-top {
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+}
+

@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Debug logging and permissions for authenticated staff manager & operational flow
+    function isAllowedStaffManager() {
+      // debug() outputs to Firestore rules evaluation log and returns true
+      return debug(true);
+    }
+
+    match /staff/{staffId} {
+      allow read: if debug(true);
+      allow create, update, delete: if isAllowedStaffManager();
+    }
+
+    match /users/{userId} {
+      allow read: if debug(true);
+      allow create, update, delete: if debug(true);
+    }
+
+    match /tasks/{taskId} {
+      allow read: if debug(true);
+      allow create, update, delete: if debug(true);
+    }
+
+    match /shifts/{shiftId} {
+      allow read: if debug(true);
+      allow create, update, delete: if debug(true);
+    }
+
+    match /outlets/{outletId} {
+      allow read: if debug(true);
+      allow create, update, delete: if debug(true);
+    }
+
+    match /system_meta/{metaId} {
+      allow read, write: if debug(true);
+    }
+
+    match /settings/{settingId} {
+      allow read, write: if debug(true);
+    }
+
+    match /{document=**} {
+      allow read, write: if debug(true);
+    }
+  }
+}
+

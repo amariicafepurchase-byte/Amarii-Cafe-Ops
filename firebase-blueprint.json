@@ -1,0 +1,79 @@
+{
+  "$schema": "https://raw.githubusercontent.com/firebase/firebase-tools/master/schema/blueprint.schema.json",
+  "entities": {
+    "Task": {
+      "collection": "tasks",
+      "fields": {
+        "title": { "type": "string", "required": true },
+        "department": { "type": "string", "required": true },
+        "priority": { "type": "string", "required": true },
+        "completed": { "type": "boolean", "required": true },
+        "deadline": { "type": "string" },
+        "assignee": { "type": "string" },
+        "assigneeId": { "type": "string" },
+        "assigneeDesignation": { "type": "string" },
+        "assigneeRoleType": { "type": "string" },
+        "details": { "type": "string" },
+        "notes": { "type": "string" },
+        "media": { "type": "array" },
+        "subTasks": { "type": "array" },
+        "isPhotoMandatory": { "type": "boolean" },
+        "isVideoMandatory": { "type": "boolean" },
+        "isNoteMandatory": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "Staff": {
+      "collection": "staff",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "outlet": { "type": "string" },
+        "password": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "department": { "type": "string", "required": true },
+        "designation": { "type": "string", "required": true },
+        "roleType": { "type": "string" },
+        "avatar": { "type": "string" }
+      }
+    },
+    "User": {
+      "collection": "users",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "outlet": { "type": "string" },
+        "role": { "type": "string" },
+        "roleType": { "type": "string" },
+        "department": { "type": "string" },
+        "designation": { "type": "string" },
+        "pin": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "Shift": {
+      "collection": "shifts",
+      "fields": {
+        "timestamp": { "type": "string", "required": true },
+        "label": { "type": "string", "required": true },
+        "totalTasks": { "type": "number", "required": true },
+        "completedTasks": { "type": "number", "required": true },
+        "result": { "type": "object" }
+      }
+    },
+    "Outlet": {
+      "collection": "outlets",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "address": { "type": "string" },
+        "phone": { "type": "string" },
+        "isDefault": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      }
+    }
+  }
+}
