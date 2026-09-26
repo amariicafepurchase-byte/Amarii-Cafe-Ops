@@ -1772,6 +1772,10 @@ export default function App() {
         sender: 'assistant',
         text: data.reply || 'Shift tasks updated.',
         timestamp: new Date().toISOString(),
+        completedTaskIds: data.completedTaskIds,
+        uncompletedTaskIds: data.uncompletedTaskIds,
+        addedTasks: data.addedTasks,
+        reportData: data.reportData,
       };
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err) {

@@ -168,13 +168,28 @@ export interface AnalysisResult {
   analyzedAt: string;
 }
 
+export interface ReportCardData {
+  title: string;
+  generatedAt: string;
+  totalTasks: number;
+  completedTasks: number;
+  pendingTasks: number;
+  urgentTasks: number;
+  completionRate: number;
+  station: string;
+  outlet: string;
+  summary: string;
+}
+
 export interface ChatMessage {
   id: string;
   sender: 'user' | 'assistant';
   text: string;
   timestamp: string;
   completedTaskIds?: string[];
+  uncompletedTaskIds?: string[];
   addedTasks?: TaskItem[];
+  reportData?: ReportCardData;
 }
 
 export interface ShiftRecord {

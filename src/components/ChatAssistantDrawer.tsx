@@ -13,9 +13,23 @@ import {
   Square,
   Sparkles,
   Check,
+  FileText,
+  FileSpreadsheet,
+  Download,
+  CheckCircle2,
+  Table,
+  Layers,
+  ArrowDownToLine,
 } from 'lucide-react';
-import { ChatMessage, TaskItem } from '../types';
+import { ChatMessage, TaskItem, ReportCardData } from '../types';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth, isHemenDas } from '../context/AuthContext';
+import {
+  exportReportAsPdf,
+  exportReportAsExcel,
+  exportReportAsDoc,
+} from '../utils/reportExport';
+import { triggerHaptic } from '../utils/haptics';
 
 export interface IndianLanguageOption {
   code: string;
@@ -64,6 +78,10 @@ export const ChatAssistantDrawer: React.FC<ChatAssistantDrawerProps> = ({
   onCloseExternal,
 }) => {
   const { isLightMode } = useTheme();
+  const { currentUser } = useAuth();
+  const isHemen = isHemenDas(currentUser);
+  const isManagement = isHemen || currentUser?.role === 'manager' || currentUser?.role === 'admin' || currentUser?.department === 'Management';
+
   const [input, setInput] = useState('');
   const [isOpenLocal, setIsOpenLocal] = useState(false);
   
@@ -77,6 +95,55 @@ export const ChatAssistantDrawer: React.FC<ChatAssistantDrawerProps> = ({
   // Voice Output (Speech Synthesis) State
   const [isSpeechOutputEnabled, setIsSpeechOutputEnabled] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+
+  // 1-Click Report Download States (Detailed for Hemen only, Normal for Management)
+  const [reportTier, setReportTier] = useState<'detailed' | 'normal'>(isHemen ? 'detailed' : 'normal');
+  const [downloadingFormat, setDownloadingFormat] = useState<string | null>(null);
+  const [downloadSuccessFeedback, setDownloadSuccessFeedback] = useState<string | null>(null);
+
+  const handleDownloadReport = async (format: 'pdf' | 'xls' | 'doc', forcedTier?: 'detailed' | 'normal') => {
+    triggerHaptic('medium');
+    setDownloadingFormat(format);
+    setDownloadSuccessFeedback(null);
+    const tierToUse = isHemen ? (forcedTier || reportTier) : 'normal';
+    try {
+      if (format === 'pdf') {
+        await exportReportAsPdf(tasks, {
+          outlet: currentUser?.outlet || 'Amarii Cafe Kothrud',
+          managerName: currentUser?.name || (isHemen ? 'Hemen Das (Owner & General Manager)' : 'Management'),
+          stationFilter: 'All Stations',
+          reportType: tierToUse,
+          isHemenDas: isHemen,
+        });
+        setDownloadSuccessFeedback(`✓ ${tierToUse === 'detailed' ? 'Master Detail PDF' : 'Shift Summary PDF'} Downloaded!`);
+      } else if (format === 'xls') {
+        exportReportAsExcel(tasks, {
+          outlet: currentUser?.outlet || 'Amarii Cafe Kothrud',
+          managerName: currentUser?.name || (isHemen ? 'Hemen Das' : 'Management'),
+          stationFilter: 'All Stations',
+          reportType: tierToUse,
+          isHemenDas: isHemen,
+        });
+        setDownloadSuccessFeedback(`✓ ${tierToUse === 'detailed' ? 'Master Detail Excel (.xls)' : 'Summary Excel (.xls)'} Downloaded!`);
+      } else if (format === 'doc') {
+        exportReportAsDoc(tasks, {
+          outlet: currentUser?.outlet || 'Amarii Cafe Kothrud',
+          managerName: currentUser?.name || (isHemen ? 'Hemen Das' : 'Management'),
+          stationFilter: 'All Stations',
+          reportType: tierToUse,
+          isHemenDas: isHemen,
+        });
+        setDownloadSuccessFeedback(`✓ ${tierToUse === 'detailed' ? 'Master Detail Word (.doc)' : 'Summary Word (.doc)'} Downloaded!`);
+      }
+      triggerHaptic('success');
+      setTimeout(() => setDownloadSuccessFeedback(null), 3500);
+    } catch (err: any) {
+      console.error('Report download error:', err);
+      setDownloadSuccessFeedback('Download failed. Please try again.');
+    } finally {
+      setDownloadingFormat(null);
+    }
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -502,12 +569,39 @@ export const ChatAssistantDrawer: React.FC<ChatAssistantDrawerProps> = ({
         </div>
       )}
 
-      {/* Quick Command Chips (All Major Indian Languages & Ops) */}
+      {/* Quick Command Chips (All Major Indian Languages, Ops & Reports) */}
       <div
         className={`px-3 py-2 border-b flex items-center gap-1.5 overflow-x-auto no-scrollbar text-[10px] font-bold ${
           isLightMode ? 'bg-zinc-50 border-zinc-200' : 'bg-[#132219] border-[#244332]'
         }`}
       >
+        <button
+          type="button"
+          onClick={() => handleDownloadReport('pdf')}
+          className="whitespace-nowrap px-2.5 py-1 bg-red-600 text-white hover:bg-red-500 transition cursor-pointer min-h-[28px] rounded font-black flex items-center gap-1 shadow-xs"
+          title="1-Click Download PDF Report"
+        >
+          <FileText className="w-3 h-3" />
+          <span>📄 PDF Report</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleDownloadReport('xls')}
+          className="whitespace-nowrap px-2.5 py-1 bg-emerald-600 text-white hover:bg-emerald-500 transition cursor-pointer min-h-[28px] rounded font-black flex items-center gap-1 shadow-xs"
+          title="1-Click Download Excel Sheet (.xls)"
+        >
+          <FileSpreadsheet className="w-3 h-3" />
+          <span>📊 Excel (.xls)</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleDownloadReport('doc')}
+          className="whitespace-nowrap px-2.5 py-1 bg-blue-600 text-white hover:bg-blue-500 transition cursor-pointer min-h-[28px] rounded font-black flex items-center gap-1 shadow-xs"
+          title="1-Click Download Word Document (.doc)"
+        >
+          <FileText className="w-3 h-3" />
+          <span>📝 Word (.doc)</span>
+        </button>
         <button
           type="button"
           onClick={() => handleQuickCommand('kya chal raha hai?')}
@@ -550,17 +644,6 @@ export const ChatAssistantDrawer: React.FC<ChatAssistantDrawerProps> = ({
         </button>
         <button
           type="button"
-          onClick={() => handleQuickCommand('সব কাজ কেমন চলছে?')}
-          className={`whitespace-nowrap px-2.5 py-1 transition cursor-pointer min-h-[28px] rounded ${
-            isLightMode
-              ? 'bg-zinc-200 hover:bg-zinc-300 text-zinc-900 border border-zinc-300'
-              : 'bg-[#244332] text-[#EDE8DC] hover:text-white'
-          }`}
-        >
-          🇧🇩 কেমন চলছে?
-        </button>
-        <button
-          type="button"
           onClick={() => handleQuickCommand('Shift status and pending summary')}
           className={`whitespace-nowrap px-2.5 py-1 transition cursor-pointer min-h-[28px] rounded ${
             isLightMode
@@ -578,59 +661,191 @@ export const ChatAssistantDrawer: React.FC<ChatAssistantDrawerProps> = ({
           isLightMode ? 'bg-zinc-50' : 'bg-[#132219]'
         }`}
       >
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            className={`flex gap-2 text-xs leading-relaxed ${
-              m.sender === 'user' ? 'justify-end' : 'justify-start'
-            }`}
-          >
-            {m.sender === 'assistant' && (
-              <div className="w-6 h-6 bg-[#E05A47] text-white flex items-center justify-center flex-shrink-0 text-[10px] font-black rounded shadow-xs">
-                <Bot className="w-3.5 h-3.5" />
-              </div>
-            )}
+        {messages.map((m) => {
+          const isAssistant = m.sender === 'assistant';
+          const hasReportIntent =
+            Boolean(m.reportData) ||
+            (isAssistant &&
+              (m.text.toLowerCase().includes('report') ||
+                m.text.toLowerCase().includes('pdf') ||
+                m.text.toLowerCase().includes('excel') ||
+                m.text.toLowerCase().includes('xls') ||
+                m.text.toLowerCase().includes('.doc') ||
+                m.text.toLowerCase().includes('word') ||
+                m.text.toLowerCase().includes('रिपोर्ट')));
+
+          const completedCount = tasks.filter((t) => t.completed).length;
+          const totalCount = tasks.length;
+          const rate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+          const urgentCount = tasks.filter((t) => t.priority === 'urgent').length;
+
+          return (
             <div
-              className={`p-3 max-w-[85%] rounded-lg ${
-                m.sender === 'user'
-                  ? 'bg-[#E05A47] text-white font-semibold shadow-md'
-                  : isLightMode
-                  ? 'bg-white text-zinc-900 border border-zinc-300 shadow-xs'
-                  : 'bg-[#16281E] text-[#F7F4EB] border border-[#244332] shadow-sm'
+              key={m.id}
+              className={`flex gap-2 text-xs leading-relaxed ${
+                m.sender === 'user' ? 'justify-end' : 'justify-start'
               }`}
             >
-              <p className="whitespace-pre-wrap">{m.text}</p>
-              <div className="flex items-center justify-between gap-3 mt-1">
-                {m.sender === 'assistant' && (
-                  <button
-                    type="button"
-                    onClick={() => speakText(m.text, selectedLang)}
-                    className="text-[9px] opacity-70 hover:opacity-100 flex items-center gap-1 cursor-pointer text-[#E05A47]"
-                    title="Read this aloud"
-                  >
-                    <Volume2 className="w-3 h-3" />
-                    <span>Speak</span>
-                  </button>
+              {isAssistant && (
+                <div className="w-6 h-6 bg-[#E05A47] text-white flex items-center justify-center flex-shrink-0 text-[10px] font-black rounded shadow-xs">
+                  <Bot className="w-3.5 h-3.5" />
+                </div>
+              )}
+              <div
+                className={`p-3 max-w-[90%] sm:max-w-[85%] rounded-lg ${
+                  m.sender === 'user'
+                    ? 'bg-[#E05A47] text-white font-semibold shadow-md'
+                    : isLightMode
+                    ? 'bg-white text-zinc-900 border border-zinc-300 shadow-xs'
+                    : 'bg-[#16281E] text-[#F7F4EB] border border-[#244332] shadow-sm'
+                }`}
+              >
+                <p className="whitespace-pre-wrap">{m.text}</p>
+
+                {/* 1-Click Professional Download Report Card */}
+                {hasReportIntent && (
+                  <div className="mt-3 p-2.5 sm:p-3 bg-[#0D1812] border border-[#244332] rounded text-white shadow-inner">
+                    <div className="flex items-center justify-between gap-1.5 pb-2 border-b border-[#244332]">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <div className="p-1 bg-[#E05A47] text-white rounded shrink-0">
+                          <FileText className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <h5 className="text-[11px] font-black uppercase text-white tracking-tight truncate leading-tight">
+                            {isHemen && reportTier === 'detailed'
+                              ? '👑 Hemen Das Master Detail Audit Report'
+                              : m.reportData?.title || 'Amarii Café Shift Summary Report'}
+                          </h5>
+                          <p className="text-[9px] text-[#DACBA9] font-medium truncate">
+                            {completedCount}/{totalCount} Completed ({rate}% Rate) &bull; {urgentCount} Urgent
+                          </p>
+                        </div>
+                      </div>
+                      <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded shrink-0 border ${
+                        isHemen
+                          ? 'bg-amber-950 text-amber-300 border-amber-500'
+                          : 'bg-emerald-950 text-emerald-300 border-emerald-600'
+                      }`}>
+                        {isHemen ? (reportTier === 'detailed' ? '👑 HEMEN DETAIL' : 'SUMMARY') : 'MGMT SUMMARY'}
+                      </span>
+                    </div>
+
+                    {/* Tier selector for Hemen Das */}
+                    {isHemen && (
+                      <div className="flex items-center justify-between gap-2 mt-2 pt-1.5 pb-1 border-b border-[#1d3829] text-[9px]">
+                        <span className="text-[#DACBA9] font-bold">Report Format Tier:</span>
+                        <div className="flex items-center gap-1 bg-black/50 p-0.5 rounded border border-[#244332]">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              triggerHaptic('light');
+                              setReportTier('detailed');
+                            }}
+                            className={`px-1.5 py-0.5 rounded font-black uppercase tracking-tight transition cursor-pointer ${
+                              reportTier === 'detailed'
+                                ? 'bg-red-600 text-white shadow-xs'
+                                : 'text-zinc-400 hover:text-white'
+                            }`}
+                          >
+                            👑 Detail Audit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              triggerHaptic('light');
+                              setReportTier('normal');
+                            }}
+                            className={`px-1.5 py-0.5 rounded font-black uppercase tracking-tight transition cursor-pointer ${
+                              reportTier === 'normal'
+                                ? 'bg-[#E05A47] text-white shadow-xs'
+                                : 'text-zinc-400 hover:text-white'
+                            }`}
+                          >
+                            Summary
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 3 Dedicated 1-Click Download Buttons */}
+                    <div className="grid grid-cols-3 gap-1.5 mt-2.5">
+                      {/* 1. PDF */}
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadReport('pdf')}
+                        disabled={downloadingFormat === 'pdf'}
+                        className="px-1.5 py-2 bg-red-600 hover:bg-red-500 active:scale-95 text-white text-[9px] sm:text-[10px] font-black uppercase tracking-tight rounded flex flex-col items-center justify-center gap-1 shadow-sm transition cursor-pointer disabled:opacity-50"
+                        title="Download Professional PDF (.pdf)"
+                      >
+                        <FileText className="w-4 h-4 shrink-0" />
+                        <span>{downloadingFormat === 'pdf' ? '...' : 'PDF (.pdf)'}</span>
+                      </button>
+
+                      {/* 2. Excel (.xls) */}
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadReport('xls')}
+                        disabled={downloadingFormat === 'xls'}
+                        className="px-1.5 py-2 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-[9px] sm:text-[10px] font-black uppercase tracking-tight rounded flex flex-col items-center justify-center gap-1 shadow-sm transition cursor-pointer disabled:opacity-50"
+                        title="Download Excel Sheet (.xls)"
+                      >
+                        <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                        <span>{downloadingFormat === 'xls' ? '...' : 'Excel (.xls)'}</span>
+                      </button>
+
+                      {/* 3. Word (.doc) */}
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadReport('doc')}
+                        disabled={downloadingFormat === 'doc'}
+                        className="px-1.5 py-2 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white text-[9px] sm:text-[10px] font-black uppercase tracking-tight rounded flex flex-col items-center justify-center gap-1 shadow-sm transition cursor-pointer disabled:opacity-50"
+                        title="Download Word Document (.doc)"
+                      >
+                        <FileText className="w-4 h-4 shrink-0" />
+                        <span>{downloadingFormat === 'doc' ? '...' : 'Word (.doc)'}</span>
+                      </button>
+                    </div>
+
+                    {downloadSuccessFeedback && (
+                      <div className="mt-2 text-center text-[10px] font-bold text-emerald-300 bg-emerald-950/90 border border-emerald-600 py-1 rounded animate-in fade-in">
+                        {downloadSuccessFeedback}
+                      </div>
+                    )}
+                  </div>
                 )}
-                <span
-                  className={`block text-[9px] font-mono ml-auto ${
-                    m.sender === 'user'
-                      ? 'text-white/80 text-right'
-                      : isLightMode
-                      ? 'text-zinc-500'
-                      : 'text-zinc-400'
-                  }`}
-                >
-                  {new Date(m.timestamp).toLocaleTimeString([], {
-                    hour: 'numeric',
-                    minute: '2-digit',
-                    hour12: true,
-                  })}
-                </span>
+
+                <div className="flex items-center justify-between gap-3 mt-1.5">
+                  {isAssistant && (
+                    <button
+                      type="button"
+                      onClick={() => speakText(m.text, selectedLang)}
+                      className="text-[9px] opacity-70 hover:opacity-100 flex items-center gap-1 cursor-pointer text-[#E05A47]"
+                      title="Read this aloud"
+                    >
+                      <Volume2 className="w-3 h-3" />
+                      <span>Speak</span>
+                    </button>
+                  )}
+                  <span
+                    className={`block text-[9px] font-mono ml-auto ${
+                      m.sender === 'user'
+                        ? 'text-white/80 text-right'
+                        : isLightMode
+                        ? 'text-zinc-500'
+                        : 'text-zinc-400'
+                    }`}
+                  >
+                    {new Date(m.timestamp).toLocaleTimeString([], {
+                      hour: 'numeric',
+                      minute: '2-digit',
+                      hour12: true,
+                    })}
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {isLoading && (
           <div

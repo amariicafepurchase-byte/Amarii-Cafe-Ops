@@ -526,9 +526,74 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
+    // Check if user is asking for a Report, PDF, Excel (XLS), Word (DOC), or Audit Export
+    const isReportRequest =
+      lower.includes('report') ||
+      lower.includes('pdf') ||
+      lower.includes('xls') ||
+      lower.includes('excel') ||
+      lower.includes('doc') ||
+      lower.includes('word') ||
+      lower.includes('sheet') ||
+      lower.includes('download') ||
+      lower.includes('export') ||
+      lower.includes('audit') ||
+      lower.includes('प्रिंट') ||
+      lower.includes('डाउनलोड') ||
+      lower.includes('डाऊनलोड') ||
+      lower.includes('রিপোর্ট') ||
+      lower.includes('அறிக்கை');
+
+    const totalCount = Array.isArray(currentTasks) ? currentTasks.length : 0;
+    const completedCount = Array.isArray(currentTasks) ? currentTasks.filter((t: any) => t.completed).length : 0;
+    const pendingCount = totalCount - completedCount;
+    const urgentCount = Array.isArray(currentTasks) ? currentTasks.filter((t: any) => t.priority === 'urgent').length : 0;
+    const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+
+    const reportData = isReportRequest
+      ? {
+          title: 'Amarii Café Operations Shift & Audit Report',
+          generatedAt: now.toISOString(),
+          totalTasks: totalCount,
+          completedTasks: completedCount,
+          pendingTasks: pendingCount,
+          urgentTasks: urgentCount,
+          completionRate,
+          station: 'All Stations',
+          outlet: 'Amarii Cafe Kothrud',
+          summary: `Shift Audit: ${completedCount}/${totalCount} tasks completed (${completionRate}% target) with ${urgentCount} urgent items.`,
+        }
+      : undefined;
+
     let reply = `Haan ji! Update note kar liya hai. Live time ${timeStr} hai.`;
 
-    if (isBengali) {
+    if (isReportRequest) {
+      if (isMarathi) {
+        reply = `📄 अमारी कॅफेचा ऑफिशियल ऑपरेशन्स रिपोर्ट तयार केला आहे! खाली दिलेल्या 1-Click बटनांवरून आपण PDF (.pdf), Excel (.xls) किंवा Word Doc (.doc) लगेच डाउनलोड करू शकता.`;
+      } else if (isBengali) {
+        reply = `📄 আমরাই ক্যাফে অফিসিয়াল শিফট রিপোর্ট প্রস্তুত! নিচের 1-ক্লিক বাটনগুলি থেকে PDF (.pdf), Excel (.xls) অথবা Word Doc (.doc) সরাসরি ডাউনলোড করতে পারেন।`;
+      } else if (isTamil) {
+        reply = `📄 அமாரி கஃபே அதிகாரப்பூர்வ அறிக்கை தயாராக உள்ளது! கீழே உள்ள 1-Click பொத்தான்கள் மூலம் PDF (.pdf), Excel (.xls) அல்லது Word Doc (.doc) பதிவிறக்கம் செய்யவும்.`;
+      } else if (isTelugu) {
+        reply = `📄 అమారి కేఫ్ అధికారిక షిఫ్ట్ రిపోర్ట్ సిద్ధంగా ఉంది! దిగువన ఉన్న 1-క్లిక్ బటన్ల ద్వారా PDF (.pdf), Excel (.xls) లేదా Word Doc (.doc) వెంటనే డౌన్‌లోడ్ చేసుకోండి.`;
+      } else if (isKannada) {
+        reply = `📄 ಅಮಾರಿ ಕೆಫೆ ಅಧಿಕೃತ ವರದಿ ಸಿದ್ಧವಾಗಿದೆ! ಕೆಳಗಿನ 1-ಕ್ಲಿಕ್ ಬಟನ್‌ಗಳಿಂದ PDF (.pdf), Excel (.xls) ಅಥವಾ Word Doc (.doc) ಅನ್ನು ತಕ್ಷಣವೇ ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ.`;
+      } else if (isGujarati) {
+        reply = `📄 અમારિ કેફે શિફ્ટ રિપોર્ટ તૈયાર છે! નીચે આપેલા 1-ક્લિક બટન દ્વારા PDF (.pdf), Excel (.xls) અથવા Word Doc (.doc) ડાઉનલોડ કરી શકો છો.`;
+      } else if (isMalayalam) {
+        reply = `📄 അമാരി കഫേ റിപ്പോർട്ട് തയ്യാറാണ്! താഴെയുള്ള 1-ക്ലിക്ക് ബട്ടണുകളിൽ നിന്ന് PDF (.pdf), Excel (.xls) അല്ലെങ്കിൽ Word Doc (.doc) ഡൗൺലോഡ് ചെയ്യാം.`;
+      } else if (isPunjabi) {
+        reply = `📄 ਅਮਾਰੀ ਕੈਫੇ ਸ਼ਿਫਟ ਰਿਪੋਰਟ ਤਿਆਰ ਹੈ! ਹੇਠਾਂ ਦਿੱਤੇ 1-ਕਲਿੱਕ ਬਟਨਾਂ ਤੋਂ PDF (.pdf), Excel (.xls) ਜਾਂ Word Doc (.doc) ਤੁਰੰਤ ਡਾਊਨਲੋਡ ਕਰੋ।`;
+      } else if (isUrdu) {
+        reply = `📄 آماری کیفے آفیشل رپورٹ تیار ہے! نیچے دیے گئے 1-کلک بٹنز سے PDF (.pdf), Excel (.xls), یا Word Doc (.doc) ڈاؤن لوڈ کریں۔`;
+      } else if (isOdia) {
+        reply = `📄 ଅମାରୀ କ୍ୟାଫେ ଅପରେସନ୍ସ ରିପୋର୍ଟ ପ୍ରସ୍ତୁତ! ତଳେ ଥିବା 1-କ୍ଲିକ୍ ବଟନ୍ ମାଧ୍ୟମରେ PDF (.pdf), Excel (.xls) କିମ୍ବା Word Doc (.doc) ଡାଉନଲୋଡ୍ କରନ୍ତୁ।`;
+      } else if (isEnglish) {
+        reply = `📄 Amarii Café Official Operations Report generated! You can 1-click download it in PDF (.pdf), Excel (.xls), or Word Doc (.doc) formats below.`;
+      } else {
+        reply = `📄 अमारी कैफे का ऑफिशियल ऑपरेशन्स रिपोर्ट तैयार कर दिया गया है! आप नीचे दिए गए 1-Click बटन्स से PDF (.pdf), Excel (.xls), या Word Doc (.doc) तुरंत डाउनलोड कर सकते हैं।`;
+      }
+    } else if (isBengali) {
       if (matchedIds.length > 0) {
         reply = `দারুণ! ${matchedIds.length}টি টাস্ক সম্পন্ন (Completed) হিসেবে মার্ক করা হয়েছে (${timeStr})।`;
       } else if (uncompletedIds.length > 0) {
@@ -642,6 +707,7 @@ app.post('/api/chat', async (req, res) => {
       completedTaskIds: matchedIds,
       uncompletedTaskIds: uncompletedIds,
       addedTasks: [],
+      reportData,
     };
   };
 
@@ -744,11 +810,45 @@ ACTIONS:
       completed: false,
     }));
 
+    const isReportRequest =
+      lower.includes('report') ||
+      lower.includes('pdf') ||
+      lower.includes('xls') ||
+      lower.includes('excel') ||
+      lower.includes('doc') ||
+      lower.includes('word') ||
+      lower.includes('sheet') ||
+      lower.includes('download') ||
+      lower.includes('export') ||
+      lower.includes('audit');
+
+    const totalCount = Array.isArray(currentTasks) ? currentTasks.length : 0;
+    const completedCount = Array.isArray(currentTasks) ? currentTasks.filter((t: any) => t.completed).length : 0;
+    const pendingCount = totalCount - completedCount;
+    const urgentCount = Array.isArray(currentTasks) ? currentTasks.filter((t: any) => t.priority === 'urgent').length : 0;
+    const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+
+    const reportData = isReportRequest
+      ? {
+          title: 'Amarii Café Operations Shift & Audit Report',
+          generatedAt: now.toISOString(),
+          totalTasks: totalCount,
+          completedTasks: completedCount,
+          pendingTasks: pendingCount,
+          urgentTasks: urgentCount,
+          completionRate,
+          station: 'All Stations',
+          outlet: 'Amarii Cafe Kothrud',
+          summary: `Shift Audit: ${completedCount}/${totalCount} tasks completed (${completionRate}% target) with ${urgentCount} urgent items.`,
+        }
+      : undefined;
+
     return res.json({
       reply: parsed.reply || `Understood! Shift updated at ${timeStr}.`,
       completedTaskIds: parsed.completedTaskIds || [],
       uncompletedTaskIds: parsed.uncompletedTaskIds || [],
       addedTasks: addedFormatted,
+      reportData,
     });
   } catch {
     return res.json(generateFastResponse());
