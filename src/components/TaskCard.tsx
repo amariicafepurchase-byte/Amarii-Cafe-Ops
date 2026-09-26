@@ -26,6 +26,7 @@ import { DEPARTMENT_COLORS } from '../data/staffData';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { LiveCameraModal } from './LiveCameraModal';
+import { evaluateTaskTimeStatus } from '../utils/timeEvaluation';
 
 interface TaskCardProps {
   task: TaskItem;
@@ -67,6 +68,10 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   const isDeleteAllowed = Boolean(canDeleteTask);
   const isUrgent = task.priority === 'urgent';
   const isPending = task.priority === 'pending';
+
+  // Compute live real-time schedule & breach status
+  const timeStatus = evaluateTaskTimeStatus(task);
+  const isTimeBreached = timeStatus.isOverdue;
 
   // Inline rejection state on the card for Hemen Das
   const [isCardRejecting, setIsCardRejecting] = useState<boolean>(false);
@@ -358,7 +363,11 @@ export const TaskCard: React.FC<TaskCardProps> = ({
       }}
       id={`task-item-${task.id}`}
       className={`group relative p-3.5 sm:p-4 transition-colors duration-150 rounded-sm border-2 ${
-        isUrgent
+        isTimeBreached && !task.completed
+          ? isLightMode
+            ? 'bg-red-50/95 border-red-600 shadow-md ring-2 ring-red-500/50'
+            : 'bg-red-950/40 border-red-600 shadow-lg ring-2 ring-red-500/40'
+          : isUrgent
           ? task.completed
             ? isLightMode
               ? 'bg-red-50/40 opacity-50 border-red-200'
@@ -487,6 +496,18 @@ export const TaskCard: React.FC<TaskCardProps> = ({
               </span>
             )}
 
+            {/* Time Breach Alert Status Badge */}
+            {isTimeBreached && !task.completed && (
+              <span
+                id={`time-breach-badge-${task.id}`}
+                className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-2 py-0.5 bg-red-600 text-white flex items-center gap-1.5 shadow-md animate-pulse"
+                title="Task deadline crossed! Reported as department breach to Hemen Das."
+              >
+                <AlertCircle className="w-3 h-3 stroke-[3]" />
+                <span>{timeStatus.statusLabel}</span>
+              </span>
+            )}
+
             {/* Timeline Window: Prominently displayed Start - End Time & Top Delete Button */}
             <div className="ml-auto flex items-center gap-1.5">
               <span
@@ -495,11 +516,13 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                     ? isLightMode
                       ? 'bg-zinc-100 text-zinc-600 border-zinc-300'
                       : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                    : isTimeBreached
+                    ? 'bg-red-600 text-white border-red-600 animate-pulse shadow-sm'
                     : isLightMode
                     ? 'bg-zinc-950 text-white border-zinc-950 shadow-xs'
                     : 'bg-zinc-800 text-amber-300 border-amber-500/50'
                 }`}
-                title={`Valid filling window: ${task.startTime || 'Start'} to ${task.endTime || task.deadline || 'End'}`}
+                title={`Mention Time window: ${task.startTime || 'Start'} to ${task.endTime || task.deadline || 'End'}`}
               >
                 <Clock className="w-3 h-3 stroke-[2.5]" />
                 <span>
@@ -575,6 +598,26 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             >
               {task.details}
             </p>
+          )}
+
+          {/* Time Breach Escalation Notice Banner */}
+          {isTimeBreached && !task.completed && (
+            <div className="mt-2 p-2.5 bg-red-950 text-red-100 text-xs font-bold border-2 border-red-600 shadow-md flex items-start justify-between gap-2 animate-pulse">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5 stroke-[2.5]" />
+                <div>
+                  <span className="font-black uppercase text-red-300 block">
+                    🚨 TIME BREACH: Scheduled Time Crossed!
+                  </span>
+                  <span className="text-red-100 mt-0.5 block">
+                    Task was scheduled for <strong>{timeStatus.timeDisplay}</strong> and was not completed on time.
+                  </span>
+                  <span className="text-[10px] text-amber-300 uppercase font-black tracking-wider block mt-1">
+                    ⚠️ Escalated to {task.department || 'Department'} Head & Master Audit Register (Hemen Das).
+                  </span>
+                </div>
+              </div>
+            </div>
           )}
 
           {/* Rejection Notice Banner from Admin Hemen Das */}

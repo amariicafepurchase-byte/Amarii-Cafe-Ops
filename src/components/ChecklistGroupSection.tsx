@@ -24,6 +24,7 @@ import {
 import { TaskItem, ChecklistHeader, TaskMedia, StaffMember } from '../types';
 import { TaskCard } from './TaskCard';
 import { useTheme } from '../context/ThemeContext';
+import { evaluateTaskTimeStatus } from '../utils/timeEvaluation';
 
 interface ChecklistGroupSectionProps {
   headerName?: ChecklistHeader | string;
@@ -81,6 +82,8 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
   const completedCount = safeTasks.filter((t) => t?.completed).length;
   const isAllCompleted = safeTasks.length > 0 && completedCount === safeTasks.length;
   const urgentCount = safeTasks.filter((t) => t?.priority === 'urgent' && !t?.completed).length;
+  const breachedTasks = safeTasks.filter((t) => !t?.completed && evaluateTaskTimeStatus(t).isOverdue);
+  const breachedCount = breachedTasks.length;
   const percentage = safeTasks.length > 0 ? Math.round((completedCount / safeTasks.length) * 100) : 0;
 
   // Subtasks total count across tasks in this group
@@ -236,6 +239,12 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
               <span className={`px-2 py-0.5 text-[10px] sm:text-xs font-black uppercase tracking-wider border ${theme.badge}`}>
                 {completedCount}/{safeTasks.length} Tasks Done ({percentage}%)
               </span>
+              {breachedCount > 0 && (
+                <span className="px-2 py-0.5 text-[10px] font-black uppercase bg-red-600 text-white animate-pulse flex items-center gap-1 shadow">
+                  <AlertCircle className="w-3 h-3 stroke-[3]" />
+                  🚨 {breachedCount} Time Breach!
+                </span>
+              )}
               {totalSubTasks > 0 && (
                 <span className="px-2 py-0.5 text-[10px] font-mono font-bold uppercase bg-blue-950 text-blue-300 border border-blue-800 flex items-center gap-1">
                   <CheckSquare className="w-3 h-3" />
@@ -367,6 +376,23 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
       {/* Task Cards List */}
       {isExpanded && (
         <div className="pt-2 space-y-2.5 sm:space-y-3">
+          {/* Time Breach Alert Banner */}
+          {breachedCount > 0 && (
+            <div className="p-3 bg-red-950 text-red-100 border-2 border-red-600 shadow-md flex items-center justify-between gap-3 animate-pulse">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-red-400 shrink-0 stroke-[2.5]" />
+                <div>
+                  <span className="text-xs font-black uppercase text-red-300 block">
+                    🚨 {resolvedHeaderName} SLA Breach: {breachedCount} Task(s) Overdue!
+                  </span>
+                  <span className="text-[11px] text-zinc-300">
+                    Mention time has passed without completion. Escalated to Department & Master Register (Hemen Das).
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {safeTasks.length === 0 ? (
             <div
               className={`py-6 text-center text-xs font-bold uppercase tracking-wider border border-dashed ${

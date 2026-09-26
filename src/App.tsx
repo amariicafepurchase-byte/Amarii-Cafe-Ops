@@ -74,6 +74,8 @@ import { DataCleanupModal } from './components/DataCleanupModal';
 import { TaskManagementModal } from './components/TaskManagementModal';
 import { AdminApprovalModal } from './components/AdminApprovalModal';
 import { FirestoreDiagnosticModal } from './components/FirestoreDiagnosticModal';
+import { TaskRegisterModal } from './components/TaskRegisterModal';
+import { TaskRegisterView } from './components/TaskRegisterView';
 import { PullToRefresh } from './components/PullToRefresh';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { useTheme } from './context/ThemeContext';
@@ -313,6 +315,8 @@ export default function App() {
   const [isAssignModalOpen, setIsAssignModalOpen] = useState<boolean>(false);
   const [isTaskDirectoryOpen, setIsTaskDirectoryOpen] = useState<boolean>(false);
   const [isAdminApprovalOpen, setIsAdminApprovalOpen] = useState<boolean>(false);
+  const [isTaskRegisterOpen, setIsTaskRegisterOpen] = useState<boolean>(false);
+  const [taskViewMode, setTaskViewMode] = useState<'live' | 'register'>('live');
 
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState<boolean>(false);
   const [isPdfModalOpen, setIsPdfModalOpen] = useState<boolean>(false);
@@ -1062,9 +1066,14 @@ export default function App() {
 
   const handleSaveTask = async (taskData: TaskItem) => {
     triggerHaptic('success');
+    const nowIso = new Date().toISOString();
     const taskWithOutlet: TaskItem = {
       ...taskData,
       outlet: taskData.outlet || activeOutlet,
+      createdAt: taskData.createdAt || nowIso,
+      assignedAt: taskData.assignedAt || nowIso,
+      assignedBy: taskData.assignedBy || (isAdmin ? 'Hemen Das (Owner & GM)' : currentUser?.name || 'Management'),
+      dueDate: taskData.dueDate || nowIso.slice(0, 10),
     };
 
     if (editingTask) {
@@ -1111,9 +1120,14 @@ export default function App() {
   // Bulk Task Creation Handler (from Add Task modal staged list)
   const handleSaveTasks = async (newTasks: TaskItem[]) => {
     triggerHaptic('success');
+    const nowIso = new Date().toISOString();
     const tasksWithOutlet = newTasks.map((t) => ({
       ...t,
       outlet: t.outlet || activeOutlet,
+      createdAt: t.createdAt || nowIso,
+      assignedAt: t.assignedAt || nowIso,
+      assignedBy: t.assignedBy || (isAdmin ? 'Hemen Das (Owner & GM)' : currentUser?.name || 'Management'),
+      dueDate: t.dueDate || nowIso.slice(0, 10),
     }));
     setTasks((prev) => [...tasksWithOutlet, ...prev]);
 
@@ -2240,6 +2254,18 @@ export default function App() {
         firestoreConnectionState={firestoreConnectionState}
         onOpenAdminApprovals={() => setIsAdminApprovalOpen(true)}
         pendingApprovalCount={pendingApprovalCount}
+        onOpenTaskRegister={() => setIsTaskRegisterOpen(true)}
+      />
+
+      <TaskRegisterModal
+        isOpen={isTaskRegisterOpen}
+        onClose={() => setIsTaskRegisterOpen(false)}
+        tasks={tasks}
+        staffList={staffList}
+        onEditTask={handleEditTask}
+        onApproveTask={handleApproveTask}
+        onRejectTask={handleRejectTask}
+        onViewMedia={setSelectedMedia}
       />
 
       <TaskManagementModal
@@ -2277,8 +2303,93 @@ export default function App() {
               onBackToTasks={() => setIsAnalyticsOpen(false)}
               onOpenDataCleanup={() => setIsDataCleanupModalOpen(true)}
             />
+        ) : taskViewMode === 'register' ? (
+          <div className="space-y-4">
+            {/* View Switcher Bar */}
+            {(isAdmin || isManager) && (
+              <div
+                className={`p-1.5 flex items-center justify-between gap-2 border-2 shadow-xs ${
+                  isLightMode ? 'bg-white border-zinc-950' : 'bg-zinc-950 border-zinc-700'
+                }`}
+              >
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setTaskViewMode('live')}
+                    className={`px-3 py-1.5 text-xs font-black uppercase tracking-tight flex items-center gap-1.5 transition cursor-pointer ${
+                      isLightMode
+                        ? 'text-zinc-600 hover:text-black hover:bg-zinc-100'
+                        : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
+                    }`}
+                  >
+                    <ClipboardList className="w-3.5 h-3.5" />
+                    <span>⚡ Live Shift Checklists</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTaskViewMode('register')}
+                    className="px-3 py-1.5 text-xs font-black uppercase tracking-tight flex items-center gap-1.5 transition cursor-pointer bg-red-600 text-white shadow"
+                  >
+                    <ClipboardList className="w-3.5 h-3.5" />
+                    <span>📋 Master Task Register (टास्क रजिस्टर)</span>
+                  </button>
+                </div>
+
+                <span className="hidden sm:inline-block text-[10px] font-mono text-zinc-400 uppercase pr-2">
+                  👑 Hemen Das Master Audit Hub
+                </span>
+              </div>
+            )}
+
+            <TaskRegisterView
+              tasks={tasks}
+              staffList={staffList}
+              onEditTask={handleEditTask}
+              onApproveTask={handleApproveTask}
+              onRejectTask={handleRejectTask}
+              onViewMedia={setSelectedMedia}
+            />
+          </div>
         ) : (
           <>
+            {/* Master Task Tab View Switcher for Hemen Das & Managers */}
+            {(isAdmin || isManager) && (
+              <div
+                className={`mb-4 p-1.5 flex items-center justify-between gap-2 border-2 shadow-xs ${
+                  isLightMode ? 'bg-white border-zinc-950' : 'bg-zinc-950 border-zinc-700'
+                }`}
+              >
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setTaskViewMode('live')}
+                    className="px-3 py-1.5 text-xs font-black uppercase tracking-tight flex items-center gap-1.5 transition cursor-pointer bg-zinc-950 text-white dark:bg-white dark:text-black shadow"
+                  >
+                    <ClipboardList className="w-3.5 h-3.5" />
+                    <span>⚡ Live Shift Checklists</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTaskViewMode('register')}
+                    className={`px-3 py-1.5 text-xs font-black uppercase tracking-tight flex items-center gap-1.5 transition cursor-pointer ${
+                      isLightMode
+                        ? 'text-red-700 hover:text-red-900 hover:bg-red-50'
+                        : 'text-red-400 hover:text-red-300 hover:bg-red-950/40'
+                    }`}
+                  >
+                    <ClipboardList className="w-3.5 h-3.5" />
+                    <span>📋 Master Task Register (टास्क रजिस्टर)</span>
+                  </button>
+                </div>
+
+                <span className="hidden sm:inline-block text-[10px] font-mono text-zinc-400 uppercase pr-2">
+                  👑 Hemen Das Master Audit Hub
+                </span>
+              </div>
+            )}
+
             {/* Department / Station Fast Switcher & Station Status Banner */}
             {/* Station Status & Sub-Filter Bar */}
             <div
@@ -3154,6 +3265,7 @@ export default function App() {
         isFirebaseConnected={isFirebaseConnected}
         onOpenAdminApprovals={() => setIsAdminApprovalOpen(true)}
         pendingApprovalCount={pendingApprovalCount}
+        onOpenTaskRegister={() => setIsTaskRegisterOpen(true)}
       />
 
       {/* Admin Photo Verification & Task Approval Modal */}

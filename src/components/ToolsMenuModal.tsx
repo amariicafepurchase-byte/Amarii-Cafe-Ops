@@ -27,6 +27,7 @@ interface ToolsMenuModalProps {
   onOpenTaskDirectory?: () => void;
   onOpenAdminApprovals?: () => void;
   pendingApprovalCount?: number;
+  onOpenTaskRegister?: () => void;
   onToggleAnalytics?: () => void;
   onOpenPdfModal?: () => void;
   onOpenOutletModal?: () => void;
@@ -53,6 +54,7 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
   onOpenTaskDirectory,
   onOpenAdminApprovals,
   pendingApprovalCount = 0,
+  onOpenTaskRegister,
   onToggleAnalytics,
   onOpenPdfModal,
   onOpenOutletModal,
@@ -193,6 +195,38 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
                 </div>
                 <div className={`text-[10px] font-medium ${(pendingApprovalCount || 0) > 0 ? 'text-black/80' : 'text-zinc-500'}`}>
                   Owner Hemen Das photo quality inspection & 1-click approvals
+                </div>
+              </div>
+            </button>
+          )}
+
+          {/* Master Task Register & Audit Ledger (Hemen Das & Managers) */}
+          {(isAdmin || isManager) && onOpenTaskRegister && (
+            <button
+              type="button"
+              id="tools-task-register-btn"
+              onClick={() => {
+                onClose();
+                onOpenTaskRegister();
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-3 text-xs font-bold text-left transition cursor-pointer rounded-sm border ${
+                isLightMode
+                  ? 'bg-red-50 hover:bg-red-100 border-red-300 text-red-950'
+                  : 'bg-red-950/40 hover:bg-red-900/60 border-red-800 text-red-200'
+              }`}
+            >
+              <div className="p-2 rounded bg-red-600 text-white">
+                <ClipboardList className="w-4 h-4 stroke-[2.5]" />
+              </div>
+              <div className="flex-1">
+                <div className="font-black uppercase text-[11px] tracking-tight flex items-center justify-between">
+                  <span>📋 Master Task Register (टास्क रजिस्टर)</span>
+                  <span className="text-[9px] font-bold bg-red-600 text-white px-1.5 py-0.2 rounded-xs">
+                    HEMEN DAS
+                  </span>
+                </div>
+                <div className="text-[10px] text-zinc-500 font-normal">
+                  All tasks ledger with dates, months, assignees, outcomes & 1-click export
                 </div>
               </div>
             </button>

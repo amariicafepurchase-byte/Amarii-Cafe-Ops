@@ -72,6 +72,7 @@ interface HeaderProps {
   firestoreConnectionState?: 'connected' | 'connecting' | 'error' | 'offline';
   onOpenAdminApprovals?: () => void;
   pendingApprovalCount?: number;
+  onOpenTaskRegister?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -104,6 +105,7 @@ export const Header: React.FC<HeaderProps> = ({
   firestoreConnectionState = 'connected',
   onOpenAdminApprovals,
   pendingApprovalCount = 0,
+  onOpenTaskRegister,
 }) => {
   const { theme, isLightMode, toggleTheme } = useTheme();
   const {
@@ -524,6 +526,24 @@ export const Header: React.FC<HeaderProps> = ({
                   {pendingApprovalCount}
                 </span>
               )}
+            </button>
+          )}
+
+          {/* Master Task Register & Ledger Button (Hemen Das & Managers) */}
+          {(isAdmin || isManager) && onOpenTaskRegister && (
+            <button
+              type="button"
+              id="header-task-register-btn"
+              onClick={onOpenTaskRegister}
+              className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 font-black uppercase text-xs tracking-tight transition shadow-xs cursor-pointer border rounded-xs flex-shrink-0 ${
+                isLightMode
+                  ? 'bg-red-600 hover:bg-red-700 text-white border-red-700'
+                  : 'bg-red-600 hover:bg-red-500 text-white border-red-500'
+              }`}
+              title="Open Master Task Register & Historical Audit (Hemen Das)"
+            >
+              <ClipboardList className="w-3.5 h-3.5 stroke-[2.5]" />
+              <span>📋 Task Register</span>
             </button>
           )}
 

@@ -156,6 +156,10 @@ export interface TaskItem {
   approvedBy?: string;
   approvedAt?: string;
   rejectionReason?: string;
+  createdAt?: string;
+  assignedAt?: string;
+  assignedBy?: string;
+  dueDate?: string;
 }
 
 export interface AnalysisResult {

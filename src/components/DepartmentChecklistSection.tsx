@@ -20,6 +20,7 @@ import { TaskItem, TaskDepartment, TaskMedia, StaffMember } from '../types';
 import { DEPARTMENT_COLORS } from '../data/staffData';
 import { TaskCard } from './TaskCard';
 import { useTheme } from '../context/ThemeContext';
+import { evaluateTaskTimeStatus } from '../utils/timeEvaluation';
 
 interface DepartmentChecklistSectionProps {
   department: TaskDepartment;
@@ -65,6 +66,8 @@ export const DepartmentChecklistSection: React.FC<DepartmentChecklistSectionProp
   const completedCount = safeTasks.filter((t) => t?.completed).length;
   const isAllCompleted = safeTasks.length > 0 && completedCount === safeTasks.length;
   const urgentCount = safeTasks.filter((t) => t?.priority === 'urgent' && !t?.completed).length;
+  const breachedTasks = safeTasks.filter((t) => !t?.completed && evaluateTaskTimeStatus(t).isOverdue);
+  const breachedCount = breachedTasks.length;
   const percentage = safeTasks.length > 0 ? Math.round((completedCount / safeTasks.length) * 100) : 0;
 
   const deptStyle = DEPARTMENT_COLORS[department] || DEPARTMENT_COLORS.General;
@@ -141,6 +144,12 @@ export const DepartmentChecklistSection: React.FC<DepartmentChecklistSectionProp
               <span className={`px-2 py-0.5 text-[10px] sm:text-xs font-black uppercase tracking-wider ${deptStyle.badge}`}>
                 {completedCount}/{tasks.length} Done ({percentage}%)
               </span>
+              {breachedCount > 0 && (
+                <span className="px-2 py-0.5 text-[10px] font-black uppercase bg-red-600 text-white animate-pulse flex items-center gap-1 shadow">
+                  <AlertCircle className="w-3 h-3 stroke-[3]" />
+                  🚨 {breachedCount} Time Breach!
+                </span>
+              )}
               {urgentCount > 0 && (
                 <span className="px-2 py-0.5 text-[10px] font-black uppercase bg-red-600 text-white animate-pulse flex items-center gap-1">
                   <AlertCircle className="w-3 h-3 stroke-[3]" />
@@ -208,6 +217,23 @@ export const DepartmentChecklistSection: React.FC<DepartmentChecklistSectionProp
       {/* Task List */}
       {isExpanded && (
         <div className="pt-2 space-y-2.5 sm:space-y-3">
+          {/* Department SLA Breach Banner */}
+          {breachedCount > 0 && (
+            <div className="p-3 bg-red-950 text-red-100 border-2 border-red-600 shadow-md flex items-center justify-between gap-3 animate-pulse">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-red-400 shrink-0 stroke-[2.5]" />
+                <div>
+                  <span className="text-xs font-black uppercase text-red-300 block">
+                    🚨 {department} Department SLA Breach Alert: {breachedCount} Task(s) Missed Deadline!
+                  </span>
+                  <span className="text-[11px] text-zinc-300">
+                    Scheduled completion time has passed without submission. Department staff must take immediate action.
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {tasks.length === 0 ? (
             <div
               className={`py-6 text-center text-xs font-bold uppercase tracking-wider border border-dashed ${
