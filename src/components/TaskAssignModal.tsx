@@ -281,44 +281,124 @@ export const TaskAssignModal: React.FC<TaskAssignModalProps> = ({
     }
   };
 
-  // Quick load standard sub-task checkpoints for the selected header
-  const handleLoadPresetCheckpoints = () => {
+  // Quick load standard checkpoints as SEPARATE individual tasks by default
+  const handleLoadPresetsAsSeparateTasks = () => {
     const presets = PRESET_CHECKPOINTS[checklistHeader];
     if (!presets || presets.length === 0) return;
 
-    const newItems: SubTaskItem[] = presets.map((p, idx) => ({
-      id: `sub-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 4)}`,
+    const assignedMember = safeStaffList.find((s) => s.id === assigneeId);
+    const newTasks: TaskItem[] = presets.map((p, idx) => ({
+      id: `task-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 4)}`,
       title: p.title,
-      isDone: false,
+      checklistHeader,
+      startTime: startTime.trim() || '09:00 AM',
+      endTime: endTime.trim() || deadline.trim() || '10:30 AM',
+      deadline: endTime.trim() || deadline.trim() || '10:30 AM',
+      department,
+      priority,
+      completed: false,
       isPhotoMandatory: Boolean(p.isPhotoMandatory || p.media === 'photo'),
       isVideoMandatory: Boolean(p.isVideoMandatory || p.media === 'video'),
       isNoteMandatory: Boolean(p.isNoteMandatory),
       mandatoryMedia: p.isPhotoMandatory || p.media === 'photo' ? 'photo' : p.isVideoMandatory || p.media === 'video' ? 'video' : 'none',
+      outlet: taskOutlet || activeOutlet,
+      subTasks: [],
+      ...(assignedMember
+        ? {
+            assigneeId: assignedMember.id,
+            assignee: `${assignedMember.name} (${assignedMember.designation})`,
+            assigneeDesignation: assignedMember.designation,
+            assigneeRoleType: assignedMember.roleType,
+          }
+        : {}),
     }));
 
-    setSubTasks((prev) => [...prev, ...newItems]);
+    setStagedTasks((prev) => [...prev, ...newTasks]);
+    setBatchToast(`⚡ Loaded ${presets.length} separate tasks for "${checklistHeader}". Each checkpoint is an individual card.`);
+    setTimeout(() => setBatchToast(null), 4500);
   };
 
-  // Add individual sub-task
+  // Quick load standard sub-task checkpoints (alias to separate tasks)
+  const handleLoadPresetCheckpoints = () => {
+    handleLoadPresetsAsSeparateTasks();
+  };
+
+  // Convert currently drafted subtasks into separate standalone tasks in staged batch
+  const handleConvertSubTasksToSeparateTasks = () => {
+    if (subTasks.length === 0) return;
+
+    const assignedMember = safeStaffList.find((s) => s.id === assigneeId);
+    const convertedTasks: TaskItem[] = subTasks.map((s, idx) => ({
+      id: `task-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 4)}`,
+      title: s.title,
+      checklistHeader,
+      startTime: startTime.trim() || '09:00 AM',
+      endTime: endTime.trim() || deadline.trim() || '10:30 AM',
+      deadline: endTime.trim() || deadline.trim() || '10:30 AM',
+      department,
+      priority,
+      completed: false,
+      isPhotoMandatory: Boolean(s.isPhotoMandatory || s.mandatoryMedia === 'photo'),
+      isVideoMandatory: Boolean(s.isVideoMandatory || s.mandatoryMedia === 'video'),
+      isNoteMandatory: Boolean(s.isNoteMandatory),
+      mandatoryMedia: s.isPhotoMandatory || s.mandatoryMedia === 'photo' ? 'photo' : s.isVideoMandatory || s.mandatoryMedia === 'video' ? 'video' : 'none',
+      outlet: taskOutlet || activeOutlet,
+      subTasks: [],
+      ...(assignedMember
+        ? {
+            assigneeId: assignedMember.id,
+            assignee: `${assignedMember.name} (${assignedMember.designation})`,
+            assigneeDesignation: assignedMember.designation,
+            assigneeRoleType: assignedMember.roleType,
+          }
+        : {}),
+    }));
+
+    setStagedTasks((prev) => [...prev, ...convertedTasks]);
+    setSubTasks([]);
+    setBatchToast(`⚡ Converted ${convertedTasks.length} sub-tasks into separate individual task cards.`);
+    setTimeout(() => setBatchToast(null), 4500);
+  };
+
+  // Add individual task / checkpoint directly to staged batch as its own separate card by default
   const handleAddSubTask = () => {
     if (!newSubTaskTitle.trim()) return;
 
-    const newSub: SubTaskItem = {
-      id: `sub-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+    const assignedMember = safeStaffList.find((s) => s.id === assigneeId);
+    const newCard: TaskItem = {
+      id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       title: newSubTaskTitle.trim(),
-      isDone: false,
+      checklistHeader,
+      startTime: startTime.trim() || '09:00 AM',
+      endTime: endTime.trim() || deadline.trim() || '10:30 AM',
+      deadline: endTime.trim() || deadline.trim() || '10:30 AM',
+      department,
+      priority,
+      completed: false,
       isPhotoMandatory: newSubPhoto,
       isVideoMandatory: newSubVideo,
       isNoteMandatory: newSubNote,
       mandatoryMedia: newSubPhoto ? 'photo' : newSubVideo ? 'video' : 'none',
+      outlet: taskOutlet || activeOutlet,
+      subTasks: [],
+      ...(assignedMember
+        ? {
+            assigneeId: assignedMember.id,
+            assignee: `${assignedMember.name} (${assignedMember.designation})`,
+            assigneeDesignation: assignedMember.designation,
+            assigneeRoleType: assignedMember.roleType,
+          }
+        : {}),
     };
 
-    setSubTasks((prev) => [...prev, newSub]);
+    setStagedTasks((prev) => [...prev, newCard]);
+    setBatchToast(`⚡ Added "${newSubTaskTitle.trim()}" as separate task card!`);
     setNewSubTaskTitle('');
     setNewSubPhoto(false);
     setNewSubVideo(false);
     setNewSubNote(false);
     subTaskInputRef.current?.focus();
+    setTimeout(() => setBatchToast(null), 3500);
   };
 
   const handleStartEditSubTask = (sub: SubTaskItem) => {
@@ -1044,30 +1124,48 @@ export const TaskAssignModal: React.FC<TaskAssignModalProps> = ({
           <div className={`border-2 p-3 sm:p-4 rounded-sm space-y-3 ${
             isLightMode ? 'bg-white border-zinc-300 shadow-xs' : 'bg-zinc-900 border-zinc-800'
           }`}>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-1.5">
                 <CheckSquare className="w-4 h-4 text-blue-500 stroke-[2.5]" />
                 <label className={`block text-xs font-black uppercase tracking-wider ${
                   isLightMode ? 'text-zinc-950' : 'text-white'
                 }`}>
-                  4. Nested Sub-Tasks Checklist ({subTasks.length})
+                  4. Checklist Checkpoints & Sub-Tasks ({subTasks.length})
                 </label>
               </div>
 
-              {PRESET_CHECKPOINTS[checklistHeader] && (
-                <button
-                  type="button"
-                  onClick={handleLoadPresetCheckpoints}
-                  className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-tight flex items-center gap-1 transition cursor-pointer border ${
-                    isLightMode
-                      ? 'bg-blue-50 hover:bg-blue-100 text-blue-900 border-blue-300'
-                      : 'bg-blue-950 hover:bg-blue-900 text-blue-300 border-blue-700'
-                  }`}
-                >
-                  <Sparkles className="w-3 h-3 text-blue-500" />
-                  <span>Load Standard Checkpoints</span>
-                </button>
-              )}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {PRESET_CHECKPOINTS[checklistHeader] && (
+                  <button
+                    type="button"
+                    onClick={handleLoadPresetsAsSeparateTasks}
+                    className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-tight flex items-center gap-1 transition cursor-pointer border ${
+                      isLightMode
+                        ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-300'
+                        : 'bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border-emerald-700'
+                    }`}
+                    title="Load all preset checkpoints as separate individual task cards"
+                  >
+                    <Sparkles className="w-3 h-3 text-emerald-500" />
+                    <span>⚡ Load as Separate Task Cards</span>
+                  </button>
+                )}
+
+                {subTasks.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleConvertSubTasksToSeparateTasks}
+                    className={`px-2 py-1 text-[10px] font-black uppercase tracking-tight flex items-center gap-1 transition cursor-pointer border ${
+                      isLightMode
+                        ? 'bg-purple-50 hover:bg-purple-100 text-purple-900 border-purple-300'
+                        : 'bg-purple-950 hover:bg-purple-900 text-purple-300 border-purple-700'
+                    }`}
+                    title="Split current sub-tasks into separate individual task cards in batch"
+                  >
+                    <span>⚡ Convert to Separate Cards</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             <p className={`text-[11px] ${isLightMode ? 'text-zinc-600' : 'text-zinc-400'}`}>

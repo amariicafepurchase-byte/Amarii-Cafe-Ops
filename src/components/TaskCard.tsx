@@ -34,6 +34,7 @@ interface TaskCardProps {
   index: number;
   onEditTask?: (task: TaskItem) => void;
   onDeleteTask?: (taskId: string) => void;
+  onUnpackSubTasks?: (taskId: string) => void;
   onViewMedia?: (media: TaskMedia) => void;
   onAddMediaToTask?: (taskId: string, media: TaskMedia) => void;
   onUpdateTaskNote?: (taskId: string, note: string) => void;
@@ -52,6 +53,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   index,
   onEditTask,
   onDeleteTask,
+  onUnpackSubTasks,
   onViewMedia,
   onAddMediaToTask,
   onUpdateTaskNote,
@@ -184,17 +186,11 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   // Check missing subtasks proofs (photo, video, note)
   const subTasksMissingProofs = subTasks.filter((s) => {
     const reqPhoto = Boolean(s.isPhotoMandatory || s.mandatoryMedia === 'photo');
-    const hasPhoto = Boolean(
-      (s.media && s.media.some((m) => m.type === 'photo')) ||
-      (task.media && task.media.some((m) => m.type === 'photo'))
-    );
+    const hasPhoto = Boolean(s.media && s.media.some((m) => m.type === 'photo'));
     if (reqPhoto && !hasPhoto) return true;
 
     const reqVideo = Boolean(s.isVideoMandatory || s.mandatoryMedia === 'video');
-    const hasVideo = Boolean(
-      (s.media && s.media.some((m) => m.type === 'video')) ||
-      (task.media && task.media.some((m) => m.type === 'video'))
-    );
+    const hasVideo = Boolean(s.media && s.media.some((m) => m.type === 'video'));
     if (reqVideo && !hasVideo) return true;
 
     const reqNote = Boolean(s.isNoteMandatory);
@@ -207,6 +203,56 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   const hasMissingParentProof = isTaskPhotoMissing || isTaskVideoMissing || isTaskNoteMissing;
   const hasMissingSubTaskProofs = subTasksMissingProofs.length > 0;
   const hasMissingMandatory = !task.completed && (hasMissingParentProof || (!allSubTasksDone || hasMissingSubTaskProofs));
+
+  // Handle individual sub-task checkbox click with strict proof validation
+  const handleSubTaskClick = (e: React.MouseEvent, sub: SubTaskItem) => {
+    e.stopPropagation();
+
+    // If task is already completed/submitted, prevent changing subtasks (locked)
+    if (task.completed) {
+      setLocalBlockMsg('🔒 Task is already submitted and locked. It cannot be modified or undone.');
+      setTimeout(() => setLocalBlockMsg(null), 4000);
+      return;
+    }
+
+    // If attempting to mark subtask as done, check required proofs
+    if (!sub.isDone) {
+      const isReqPhoto = Boolean(sub.isPhotoMandatory || sub.mandatoryMedia === 'photo');
+      const hasSubPhoto = Boolean(sub.media && sub.media.some((m) => m.type === 'photo'));
+      if (isReqPhoto && !hasSubPhoto) {
+        setLocalBlockMsg(`📷 Photo Proof Required! Please snap a photo before marking "${sub.title}" done.`);
+        setLiveCameraSubTaskId(sub.id);
+        setIsLiveCameraOpen(true);
+        setTimeout(() => setLocalBlockMsg(null), 6000);
+        return;
+      }
+
+      const isReqVideo = Boolean(sub.isVideoMandatory || sub.mandatoryMedia === 'video');
+      const hasSubVideo = Boolean(sub.media && sub.media.some((m) => m.type === 'video'));
+      if (isReqVideo && !hasSubVideo) {
+        setLocalBlockMsg(`🎥 Video Proof Required for "${sub.title}"! Attach video below.`);
+        setActiveSubTaskIdForMedia(sub.id);
+        subTaskVideoInputRef.current?.click();
+        setTimeout(() => setLocalBlockMsg(null), 6000);
+        return;
+      }
+
+      const isReqNote = Boolean(sub.isNoteMandatory);
+      const hasSubNote = Boolean(sub.notes && sub.notes.trim());
+      if (isReqNote && !hasSubNote) {
+        setLocalBlockMsg(`📝 Shift Note Required for "${sub.title}"! Please enter observation.`);
+        setEditingSubTaskIdForNote(sub.id);
+        setSubTaskNoteDraft(sub.notes || '');
+        setTimeout(() => setLocalBlockMsg(null), 6000);
+        return;
+      }
+    }
+
+    setLocalBlockMsg(null);
+    if (onToggleSubTask) {
+      onToggleSubTask(task.id, sub.id);
+    }
+  };
 
   // Handle direct video attachment to parent task (Strictly Video format)
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -293,6 +339,13 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   // Handle clicking parent checkbox with pre-flight check
   const handleParentToggleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
+
+    // Prevent undoing / reopening submitted tasks
+    if (task.completed) {
+      setLocalBlockMsg('🔒 Task is submitted and locked. It cannot be reopened or undone.');
+      setTimeout(() => setLocalBlockMsg(null), 5000);
+      return;
+    }
 
     if (!task.completed) {
       if (isTaskPhotoMissing && isTaskVideoMissing) {
@@ -441,11 +494,26 @@ export const TaskCard: React.FC<TaskCardProps> = ({
 
         {/* Task Info & Actions */}
         <div className="flex-1 min-w-0">
-          {/* Top Badges Bar: Group Header, Timeline Window, Priority */}
+          {/* Top Badges Bar: Task # Index, Group Header, Timeline Window, Priority */}
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-1.5">
+            {/* Task Index Sequence Number */}
+            <span
+              className={`text-[9px] sm:text-[10px] font-mono font-black px-1.5 py-0.5 border flex items-center gap-0.5 rounded-xs ${
+                task.completed
+                  ? isLightMode
+                    ? 'bg-zinc-200 text-zinc-600 border-zinc-300'
+                    : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                  : isLightMode
+                  ? 'bg-zinc-950 text-white border-zinc-950'
+                  : 'bg-white text-black border-white'
+              }`}
+            >
+              #{index + 1}
+            </span>
+
             {/* Checklist Group Header Badge */}
             {task.checklistHeader && (
-              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-2 py-0.5 bg-blue-600 text-white flex items-center gap-1">
+              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-2 py-0.5 bg-blue-600 text-white flex items-center gap-1 rounded-xs">
                 <Tag className="w-3 h-3 stroke-[2.5]" />
                 <span>{task.checklistHeader}</span>
               </span>
@@ -453,16 +521,31 @@ export const TaskCard: React.FC<TaskCardProps> = ({
 
             {/* Department Badge */}
             {task.department && (
-              <span className={`text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 ${deptStyle.badge}`}>
+              <span className={`text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 rounded-xs ${deptStyle.badge}`}>
                 {task.department}
               </span>
             )}
 
             {/* Priority Badge */}
             {isUrgent && (
-              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 bg-red-600 text-white flex items-center gap-1">
+              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 bg-red-600 text-white flex items-center gap-1 rounded-xs">
                 <AlertCircle className="w-3 h-3 stroke-[3]" />
                 URGENT
+              </span>
+            )}
+
+            {/* Photo Mandatory Badge */}
+            {isTaskPhotoRequired && (
+              <span
+                className={`text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 border flex items-center gap-1 rounded-xs ${
+                  hasTaskPhoto
+                    ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
+                    : 'bg-emerald-950 text-emerald-300 border-emerald-500 animate-pulse'
+                }`}
+                title={hasTaskPhoto ? 'Photo proof attached' : 'Mandatory photo proof required!'}
+              >
+                <Camera className="w-3 h-3" />
+                <span>{hasTaskPhoto ? 'Photo ✓' : '📸 Photo Req'}</span>
               </span>
             )}
 
@@ -470,7 +553,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             {(task.approvalStatus === 'pending' || (task.priority === 'pending' && !task.completed)) && (
               <span
                 id={`awaiting-approval-badge-${task.id}`}
-                className={`text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-2 py-0.5 border flex items-center gap-1.5 shadow-xs animate-pulse ${
+                className={`text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-2 py-0.5 border flex items-center gap-1.5 shadow-xs animate-pulse rounded-xs ${
                   isLightMode
                     ? 'bg-amber-100 text-amber-950 border-amber-400'
                     : 'bg-amber-950/90 text-amber-300 border-amber-500'
@@ -483,14 +566,14 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             )}
 
             {task.approvalStatus === 'rejected' && (
-              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 bg-red-600 text-white flex items-center gap-1 animate-pulse">
+              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 bg-red-600 text-white flex items-center gap-1 animate-pulse rounded-xs">
                 <AlertCircle className="w-3 h-3 stroke-[2.5]" />
                 ❌ REJECTED BY HEMEN DAS
               </span>
             )}
 
             {task.approvalStatus === 'approved' && (
-              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 bg-emerald-600 text-white flex items-center gap-1">
+              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 bg-emerald-600 text-white flex items-center gap-1 rounded-xs">
                 <Check className="w-3 h-3 stroke-[3]" />
                 ✓ APPROVED BY HEMEN DAS
               </span>
@@ -500,7 +583,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             {isTimeBreached && !task.completed && (
               <span
                 id={`time-breach-badge-${task.id}`}
-                className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-2 py-0.5 bg-red-600 text-white flex items-center gap-1.5 shadow-md animate-pulse"
+                className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-2 py-0.5 bg-red-600 text-white flex items-center gap-1.5 shadow-md animate-pulse rounded-xs"
                 title="Task deadline crossed! Reported as department breach to Hemen Das."
               >
                 <AlertCircle className="w-3 h-3 stroke-[3]" />
@@ -511,7 +594,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             {/* Timeline Window: Prominently displayed Start - End Time & Top Delete Button */}
             <div className="ml-auto flex items-center gap-1.5">
               <span
-                className={`text-[10px] sm:text-xs font-mono font-black uppercase px-2 py-0.5 border flex items-center gap-1 ${
+                className={`text-[10px] sm:text-xs font-mono font-black uppercase px-2 py-0.5 border flex items-center gap-1 rounded-xs ${
                   task.completed
                     ? isLightMode
                       ? 'bg-zinc-100 text-zinc-600 border-zinc-300'
@@ -536,7 +619,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                   type="button"
                   id={`top-delete-task-${task.id}`}
                   onClick={handleDeleteTaskCard}
-                  className={`p-1 border transition cursor-pointer active:scale-90 flex items-center justify-center ${
+                  className={`p-1 border transition cursor-pointer active:scale-90 flex items-center justify-center rounded-xs ${
                     isLightMode
                       ? 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200 hover:border-red-400'
                       : 'bg-red-950/50 hover:bg-red-900/80 text-red-400 border-red-900/70 hover:border-red-600'
@@ -842,7 +925,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
               }`}
             >
               {/* Sub-tasks Progress Header */}
-              <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center justify-between text-xs flex-wrap gap-2">
                 <div className="flex items-center gap-1.5">
                   <CheckSquare className="w-3.5 h-3.5 text-blue-500 stroke-[2.5]" />
                   <span
@@ -850,11 +933,31 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                       isLightMode ? 'text-zinc-900' : 'text-zinc-200'
                     }`}
                   >
-                    Nested Checklist Items
+                    Checklist Sub-Tasks
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 ml-auto">
+                  {/* Option to split subtasks into standalone individual task cards */}
+                  {onUnpackSubTasks && subTasks.length > 0 && !task.completed && (
+                    <button
+                      type="button"
+                      id={`unpack-subtasks-btn-${task.id}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onUnpackSubTasks(task.id);
+                      }}
+                      className={`px-2 py-0.5 text-[9px] font-black uppercase tracking-tight border flex items-center gap-1 transition cursor-pointer active:scale-95 rounded-xs ${
+                        isLightMode
+                          ? 'bg-purple-50 hover:bg-purple-100 text-purple-900 border-purple-300'
+                          : 'bg-purple-950/80 hover:bg-purple-900 text-purple-300 border-purple-700'
+                      }`}
+                      title="Convert these checklist sub-tasks into separate individual task cards"
+                    >
+                      <span>⚡ Split into Separate Cards</span>
+                    </button>
+                  )}
+
                   <span
                     className={`font-mono text-[10px] font-black ${
                       allSubTasksDone
@@ -906,39 +1009,59 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                     return (
                       <div
                         key={sub.id ? `sub-${task.id}-${sub.id}-${sIdx}` : `sub-${task.id}-${sIdx}`}
-                        className={`p-2.5 border transition text-xs rounded-xs space-y-2 ${
+                        className={`p-3 border-2 transition text-xs rounded-xs space-y-2 shadow-xs ${
                           sub.isDone
                             ? isLightMode
-                              ? 'bg-zinc-100/80 border-zinc-200 text-zinc-500'
+                              ? 'bg-zinc-100/90 border-zinc-200 text-zinc-500'
                               : 'bg-zinc-900/40 border-zinc-800/80 text-zinc-500'
                             : isLightMode
                             ? 'bg-white border-zinc-300 text-zinc-900 hover:border-zinc-400'
-                            : 'bg-zinc-900 border-zinc-800 text-zinc-200 hover:border-zinc-700'
+                            : 'bg-zinc-900 border-zinc-700 text-zinc-200 hover:border-zinc-500'
                         }`}
                       >
-                        {/* Subtask Top Header Row: Checkbox, Title, and Mandatory Proof Chips */}
+                        {/* Subtask Top Header Row: Step #, Checkbox, Title, and Mandatory Proof Chips */}
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2 min-w-0 flex-1">
-                            {/* Subtask Checkbox */}
+                            {/* Step Sequence Badge */}
+                            <span
+                              className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-xs border flex-shrink-0 ${
+                                sub.isDone
+                                  ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800'
+                                  : isLightMode
+                                  ? 'bg-zinc-100 text-zinc-700 border-zinc-300'
+                                  : 'bg-zinc-800 text-zinc-300 border-zinc-700'
+                              }`}
+                            >
+                              Item #{sIdx + 1}
+                            </span>
+
+                            {/* Subtask Checkbox with strict validation */}
                             <button
                               type="button"
-                              onClick={() => onToggleSubTask && onToggleSubTask(task.id, sub.id)}
-                              className={`w-4 h-4 border flex items-center justify-center transition cursor-pointer flex-shrink-0 ${
+                              id={`subtask-chk-${sub.id}`}
+                              onClick={(e) => handleSubTaskClick(e, sub)}
+                              className={`w-5 h-5 border-2 flex items-center justify-center transition cursor-pointer flex-shrink-0 rounded-xs ${
                                 sub.isDone
                                   ? 'bg-emerald-500 border-emerald-500 text-black'
                                   : isLightMode
                                   ? 'border-zinc-400 hover:border-zinc-800'
-                                  : 'border-zinc-600 hover:border-white'
+                                  : 'border-zinc-500 hover:border-white'
                               }`}
-                              title={sub.isDone ? 'Mark subtask incomplete' : 'Mark subtask complete'}
+                              title={
+                                sub.isDone
+                                  ? 'Click to uncheck sub-task'
+                                  : isReqPhoto && !hasSubPhoto
+                                  ? 'Mandatory photo required! Click to open camera'
+                                  : 'Click to complete sub-task'
+                              }
                             >
-                              {sub.isDone && <Check className="w-3 h-3 stroke-[3]" />}
+                              {sub.isDone && <Check className="w-3.5 h-3.5 stroke-[3]" />}
                             </button>
 
                             {/* Subtask Title */}
                             <span
-                              onClick={() => onToggleSubTask && onToggleSubTask(task.id, sub.id)}
-                              className={`font-bold cursor-pointer select-none truncate ${
+                              onClick={(e) => handleSubTaskClick(e, sub)}
+                              className={`font-black text-xs sm:text-[13px] cursor-pointer select-none truncate ${
                                 sub.isDone ? 'line-through opacity-60' : ''
                               }`}
                             >
@@ -950,48 +1073,48 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                           <div className="flex items-center gap-1 flex-shrink-0">
                             {isReqPhoto && (
                               <span
-                                className={`px-1.5 py-0.5 text-[9px] font-black uppercase tracking-tight border flex items-center gap-0.5 ${
+                                className={`px-1.5 py-0.5 text-[9px] font-black uppercase tracking-tight border flex items-center gap-0.5 rounded-xs ${
                                   hasSubPhoto
                                     ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
-                                    : 'bg-emerald-950/80 text-emerald-300 border-emerald-500 animate-pulse'
+                                    : 'bg-emerald-950 text-emerald-300 border-emerald-500 animate-pulse'
                                 }`}
                                 title={hasSubPhoto ? 'Photo proof attached' : 'Mandatory photo required'}
                               >
                                 <Camera className="w-2.5 h-2.5" />
-                                <span>{hasSubPhoto ? 'Photo ✓' : 'Photo Req'}</span>
+                                <span>{hasSubPhoto ? 'Photo ✓' : '📸 Photo Req'}</span>
                               </span>
                             )}
 
                             {isReqVideo && (
                               <span
-                                className={`px-1.5 py-0.5 text-[9px] font-black uppercase tracking-tight border flex items-center gap-0.5 ${
+                                className={`px-1.5 py-0.5 text-[9px] font-black uppercase tracking-tight border flex items-center gap-0.5 rounded-xs ${
                                   hasSubVideo
                                     ? 'bg-rose-950 text-rose-300 border-rose-700'
-                                    : 'bg-rose-950/80 text-rose-300 border-rose-500 animate-pulse'
+                                    : 'bg-rose-950 text-rose-300 border-rose-500 animate-pulse'
                                 }`}
                                 title={hasSubVideo ? 'Video proof attached' : 'Mandatory video required'}
                               >
                                 <Video className="w-2.5 h-2.5" />
-                                <span>{hasSubVideo ? 'Video ✓' : 'Video Req'}</span>
+                                <span>{hasSubVideo ? 'Video ✓' : '🎥 Video Req'}</span>
                               </span>
                             )}
 
                             {isReqNote && (
                               <span
-                                className={`px-1.5 py-0.5 text-[9px] font-black uppercase tracking-tight border flex items-center gap-0.5 ${
+                                className={`px-1.5 py-0.5 text-[9px] font-black uppercase tracking-tight border flex items-center gap-0.5 rounded-xs ${
                                   hasSubNote
                                     ? 'bg-amber-950 text-amber-300 border-amber-700'
-                                    : 'bg-amber-950/80 text-amber-300 border-amber-500 animate-pulse'
+                                    : 'bg-amber-950 text-amber-300 border-amber-500 animate-pulse'
                                 }`}
                                 title={hasSubNote ? 'Shift note entered' : 'Mandatory note required'}
                               >
                                 <FileText className="w-2.5 h-2.5" />
-                                <span>{hasSubNote ? 'Note ✓' : 'Note Req'}</span>
+                                <span>{hasSubNote ? 'Note ✓' : '📝 Note Req'}</span>
                               </span>
                             )}
 
                             {sub.isDone && (
-                              <span className="text-[9px] font-mono text-emerald-500 font-bold ml-0.5">
+                              <span className="text-[10px] font-mono text-emerald-500 font-black ml-0.5">
                                 ✓ Done
                               </span>
                             )}
@@ -1249,7 +1372,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                       e.stopPropagation();
                       onViewMedia && onViewMedia(m);
                     }}
-                    className="relative w-12 h-12 sm:w-14 sm:h-14 border-2 border-zinc-700 hover:border-white transition overflow-hidden bg-black flex-shrink-0 cursor-pointer group/media"
+                    className="relative w-12 h-12 sm:w-14 sm:h-14 border-2 border-zinc-700 hover:border-white transition overflow-hidden bg-black flex-shrink-0 cursor-pointer group/media rounded-xs"
                     title={`View ${m.name || m.type}`}
                   >
                     {m.type === 'video' ? (
@@ -1267,6 +1390,153 @@ export const TaskCard: React.FC<TaskCardProps> = ({
               </div>
             </div>
           )}
+
+          {/* DEDICATED TASK SUBMIT / PROOF COMPLETION BAR */}
+          <div
+            id={`task-submit-bar-${task.id}`}
+            className={`mt-3 p-2.5 sm:p-3 border-2 rounded-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 shadow-xs ${
+              task.completed
+                ? isLightMode
+                  ? 'bg-emerald-50/90 border-emerald-300'
+                  : 'bg-emerald-950/30 border-emerald-800/80'
+                : isTaskPhotoMissing
+                ? isLightMode
+                  ? 'bg-amber-50/95 border-amber-400'
+                  : 'bg-amber-950/40 border-amber-600/80'
+                : hasSubTasks && !allSubTasksDone
+                ? isLightMode
+                  ? 'bg-zinc-100/90 border-zinc-300'
+                  : 'bg-zinc-900/90 border-zinc-700'
+                : isLightMode
+                ? 'bg-blue-50/95 border-blue-400'
+                : 'bg-blue-950/40 border-blue-600/80'
+            }`}
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div
+                className={`w-7 h-7 rounded-xs flex items-center justify-center flex-shrink-0 font-black ${
+                  task.completed
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : isTaskPhotoMissing
+                    ? 'bg-amber-500 text-black shadow-xs'
+                    : hasSubTasks && !allSubTasksDone
+                    ? 'bg-zinc-700 text-zinc-300'
+                    : 'bg-blue-600 text-white animate-pulse shadow-xs'
+                }`}
+              >
+                {task.completed ? (
+                  <Check className="w-4 h-4 stroke-[3]" />
+                ) : isTaskPhotoMissing ? (
+                  <Camera className="w-4 h-4" />
+                ) : (
+                  <CheckSquare className="w-4 h-4 stroke-[2.5]" />
+                )}
+              </div>
+
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span
+                    className={`text-xs font-black uppercase tracking-tight ${
+                      task.completed
+                        ? 'text-emerald-500'
+                        : isTaskPhotoMissing
+                        ? isLightMode
+                          ? 'text-amber-950'
+                          : 'text-amber-300'
+                        : hasSubTasks && !allSubTasksDone
+                        ? isLightMode
+                          ? 'text-zinc-800'
+                          : 'text-zinc-300'
+                        : isLightMode
+                        ? 'text-blue-950'
+                        : 'text-blue-300'
+                    }`}
+                  >
+                    {task.completed
+                      ? 'Task Completed & Submitted'
+                      : isTaskPhotoMissing
+                      ? 'Photo Proof Required To Submit'
+                      : hasSubTasks && !allSubTasksDone
+                      ? `Sub-tasks Incomplete (${doneSubTasksCount}/${subTasks.length})`
+                      : 'Ready for Official Submission'}
+                  </span>
+
+                  {task.submittedBy && task.completed && (
+                    <span className="text-[10px] text-zinc-400 font-medium">
+                      (by {task.submittedBy})
+                    </span>
+                  )}
+                </div>
+
+                <p
+                  className={`text-[11px] leading-tight truncate mt-0.5 ${
+                    isLightMode ? 'text-zinc-600' : 'text-zinc-400'
+                  }`}
+                >
+                  {task.completed
+                    ? `Verified and logged in shift record • Awaiting Hemen Das inspection`
+                    : isTaskPhotoMissing
+                    ? 'Must snap/attach photo proof before submission is accepted.'
+                    : hasSubTasks && !allSubTasksDone
+                    ? 'Please complete and check all nested checklist items above.'
+                    : 'All checkpoints satisfied. Click Submit to mark complete & send for review.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
+              {!task.completed ? (
+                <>
+                  {isTaskPhotoMissing ? (
+                    <button
+                      type="button"
+                      id={`submit-snap-photo-${task.id}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setLiveCameraSubTaskId(null);
+                        setIsLiveCameraOpen(true);
+                      }}
+                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase tracking-tight flex items-center gap-1.5 transition cursor-pointer active:scale-95 shadow-md rounded-xs animate-pulse"
+                      title="Snap required photo proof to complete this task"
+                    >
+                      <Camera className="w-4 h-4 stroke-[2.5]" />
+                      <span>📷 Snap Photo & Submit</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      id={`submit-task-btn-${task.id}`}
+                      onClick={handleParentToggleClick}
+                      disabled={hasSubTasks && !allSubTasksDone}
+                      className={`px-4 py-2 text-xs font-black uppercase tracking-tight flex items-center gap-1.5 transition cursor-pointer active:scale-95 shadow-md rounded-xs ${
+                        hasSubTasks && !allSubTasksDone
+                          ? 'bg-zinc-700 text-zinc-400 cursor-not-allowed opacity-60'
+                          : 'bg-emerald-600 hover:bg-emerald-500 text-white animate-pulse'
+                      }`}
+                      title={
+                        hasSubTasks && !allSubTasksDone
+                          ? `Complete remaining ${subTasks.length - doneSubTasksCount} sub-tasks first`
+                          : 'Submit task officially'
+                      }
+                    >
+                      <Check className="w-4 h-4 stroke-[3]" />
+                      <span>🚀 Submit Task</span>
+                    </button>
+                  )}
+                </>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="px-2.5 py-1 text-[10px] font-black uppercase tracking-tight bg-emerald-600/20 text-emerald-400 border border-emerald-500/50 flex items-center gap-1 rounded-xs"
+                    title="Task has been submitted and locked. Cannot be reopened or undone."
+                  >
+                    <Check className="w-3.5 h-3.5 stroke-[3]" />
+                    <span>✓ Submitted & Locked</span>
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
 
           {/* Task Bottom Control Bar with Assignee, Proof Actions, Edit, and Delete buttons */}
           <div

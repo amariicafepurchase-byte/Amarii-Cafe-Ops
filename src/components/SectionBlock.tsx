@@ -14,6 +14,7 @@ interface SectionBlockProps {
   onToggleTask: (id: string) => void;
   onEditTask?: (task: TaskItem) => void;
   onDeleteTask?: (taskId: string) => void;
+  onUnpackSubTasks?: (taskId: string) => void;
   onViewMedia?: (media: TaskMedia) => void;
   onAddMediaToTask?: (taskId: string, media: TaskMedia) => void;
   onUpdateTaskNote?: (taskId: string, note: string) => void;
@@ -36,6 +37,7 @@ export const SectionBlock: React.FC<SectionBlockProps> = ({
   onToggleTask,
   onEditTask,
   onDeleteTask,
+  onUnpackSubTasks,
   onViewMedia,
   onAddMediaToTask,
   onUpdateTaskNote,
@@ -172,6 +174,7 @@ export const SectionBlock: React.FC<SectionBlockProps> = ({
                   onToggle={onToggleTask}
                   onEditTask={onEditTask}
                   onDeleteTask={onDeleteTask}
+                  onUnpackSubTasks={onUnpackSubTasks}
                   onViewMedia={onViewMedia}
                   onAddMediaToTask={onAddMediaToTask}
                   onUpdateTaskNote={onUpdateTaskNote}

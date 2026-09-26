@@ -17,6 +17,8 @@ import {
   Lock,
   Database,
   ShieldCheck,
+  BellRing,
+  Volume2,
 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
@@ -46,6 +48,7 @@ interface ToolsMenuModalProps {
   staffCount?: number;
   onOpenDiagnostics?: () => void;
   isFirebaseConnected?: boolean;
+  onTriggerTestAlarm?: () => void;
 }
 
 export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
@@ -73,6 +76,7 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
   staffCount = 2,
   onOpenDiagnostics,
   isFirebaseConnected = true,
+  onTriggerTestAlarm,
 }) => {
   const { isLightMode } = useTheme();
   const { isAdmin, isManager, canAddTask, canAccessTools } = useAuth();
@@ -227,6 +231,38 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
                 </div>
                 <div className="text-[10px] text-zinc-500 font-normal">
                   All tasks ledger with dates, months, assignees, outcomes & 1-click export
+                </div>
+              </div>
+            </button>
+          )}
+
+          {/* Extreme Loud 10-Min Pre-Task Alarm & Mobile Notification Test */}
+          {onTriggerTestAlarm && (
+            <button
+              type="button"
+              id="tools-test-alarm-btn"
+              onClick={() => {
+                onClose();
+                onTriggerTestAlarm();
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-3 text-xs font-bold text-left transition cursor-pointer rounded-sm border ${
+                isLightMode
+                  ? 'bg-amber-50 hover:bg-amber-100 border-amber-300 text-amber-950'
+                  : 'bg-amber-950/40 hover:bg-amber-900/60 border-amber-700 text-amber-200'
+              }`}
+            >
+              <div className="p-2 rounded bg-amber-600 text-white animate-pulse">
+                <BellRing className="w-4 h-4 stroke-[2.5]" />
+              </div>
+              <div className="flex-1">
+                <div className="font-black uppercase text-[11px] tracking-tight flex items-center justify-between">
+                  <span>🚨 Test 10-Min Alarm & Extreme Sound</span>
+                  <span className="text-[9px] font-bold bg-amber-600 text-white px-1.5 py-0.2 rounded-xs">
+                    PWA NOTIF
+                  </span>
+                </div>
+                <div className="text-[10px] text-zinc-400 font-normal">
+                  Test dual-oscillator extreme loud siren, vibration & mobile push notification
                 </div>
               </div>
             </button>

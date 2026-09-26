@@ -76,6 +76,7 @@ import { AdminApprovalModal } from './components/AdminApprovalModal';
 import { FirestoreDiagnosticModal } from './components/FirestoreDiagnosticModal';
 import { TaskRegisterModal } from './components/TaskRegisterModal';
 import { TaskRegisterView } from './components/TaskRegisterView';
+import { PreTaskAlarmModal } from './components/PreTaskAlarmModal';
 import { PullToRefresh } from './components/PullToRefresh';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { useTheme } from './context/ThemeContext';
@@ -83,6 +84,12 @@ import { useAuth } from './context/AuthContext';
 import { useOutlet } from './context/OutletContext';
 import { triggerHaptic } from './utils/haptics';
 import { compressImage } from './utils/imageCompressor';
+import {
+  checkPreTaskAlarms,
+  triggerTestPreTaskAlarm,
+  requestNotificationPermission,
+  stopExtremeLoudAlarm,
+} from './utils/preTaskAlarm';
 import {
   subscribeToTasks,
   subscribeToStaff,
@@ -113,6 +120,50 @@ import { executeTaskOperationWithQueue } from './lib/taskQueue';
 
 const STORAGE_KEY_STATION = 'amarii_active_station_v2';
 const STORAGE_KEY_ACTIVE_STAFF = 'amarii_active_staff_id_v2';
+
+// Helper to normalize any incoming tasks so that combined subtasks are always converted to separate individual tasks by default
+const normalizeTasksToSeparateCards = (rawTasks: TaskItem[]): TaskItem[] => {
+  const result: TaskItem[] = [];
+  rawTasks.forEach((t) => {
+    if (t.subTasks && t.subTasks.length > 0) {
+      t.subTasks.forEach((s, sIdx) => {
+        result.push({
+          id: s.id && !s.id.startsWith('sub-') ? s.id : `${t.id}-card-${sIdx + 1}`,
+          title: s.title,
+          checklistHeader: t.checklistHeader || 'General Operations',
+          startTime: t.startTime || '09:00 AM',
+          endTime: t.endTime || t.deadline || '10:30 AM',
+          deadline: t.deadline || t.endTime || '10:30 AM',
+          department: t.department || 'General',
+          priority: t.priority || 'today',
+          completed: s.isDone,
+          completedAt: s.completedAt,
+          isPhotoMandatory: Boolean(s.isPhotoMandatory || s.mandatoryMedia === 'photo'),
+          isVideoMandatory: Boolean(s.isVideoMandatory || s.mandatoryMedia === 'video'),
+          isNoteMandatory: Boolean(s.isNoteMandatory),
+          mandatoryMedia: s.isPhotoMandatory || s.mandatoryMedia === 'photo' ? 'photo' : s.isVideoMandatory || s.mandatoryMedia === 'video' ? 'video' : 'none',
+          media: s.media || [],
+          notes: s.notes || '',
+          outlet: t.outlet || DEFAULT_OUTLET,
+          assignee: t.assignee,
+          assigneeId: t.assigneeId,
+          assigneeDesignation: t.assigneeDesignation,
+          assigneeRoleType: t.assigneeRoleType,
+          createdAt: t.createdAt,
+          assignedAt: t.assignedAt,
+          assignedBy: t.assignedBy,
+          approvalStatus: t.approvalStatus,
+          submittedBy: t.submittedBy,
+          submittedAt: t.submittedAt,
+          subTasks: [],
+        });
+      });
+    } else {
+      result.push(t);
+    }
+  });
+  return result;
+};
 
 export default function App() {
   const { theme, isLightMode } = useTheme();
@@ -413,6 +464,48 @@ export default function App() {
     type: 'success' | 'error' | 'info';
   } | null>(null);
 
+  // 10-Minute Pre-Task Extreme Siren Alarm Modal State
+  const [activeAlarm, setActiveAlarm] = useState<{
+    isOpen: boolean;
+    task: TaskItem | null;
+    minutesRemaining: number;
+  }>({
+    isOpen: false,
+    task: null,
+    minutesRemaining: 10,
+  });
+
+  // Automatically request notification permissions on user activity & mount
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      if (Notification.permission === 'default') {
+        requestNotificationPermission().catch(() => {});
+      }
+    }
+  }, []);
+
+  // Periodic 10-minute pre-task alarm evaluation (runs every 15 seconds)
+  useEffect(() => {
+    if (!tasks || tasks.length === 0) return;
+
+    const runAlarmCheck = () => {
+      checkPreTaskAlarms(tasks, (task, minutesRemaining) => {
+        setActiveAlarm({
+          isOpen: true,
+          task,
+          minutesRemaining,
+        });
+      });
+    };
+
+    // Immediate initial check
+    runAlarmCheck();
+
+    // Check periodically
+    const interval = setInterval(runAlarmCheck, 15000);
+    return () => clearInterval(interval);
+  }, [tasks]);
+
   // Auto-dismiss toast feedback after 4 seconds
   useEffect(() => {
     if (!toastFeedback) return;
@@ -491,7 +584,8 @@ export default function App() {
           `[App] Real-time tasks listener updated: ${liveTasks.length} tasks (fromCache: ${Boolean(fromCache)})`
         );
         if (liveTasks && liveTasks.length > 0) {
-          setTasks(liveTasks);
+          const normalized = normalizeTasksToSeparateCards(liveTasks);
+          setTasks(normalized);
         }
         setSyncedTasksCount(liveTasks ? liveTasks.length : 0);
         setIsFirebaseConnected(true);
@@ -997,7 +1091,7 @@ export default function App() {
         fetchStaffOnce(),
       ]);
       if (freshTasks && freshTasks.length > 0) {
-        setTasks(freshTasks);
+        setTasks(normalizeTasksToSeparateCards(freshTasks));
       }
       if (freshStaff && freshStaff.length > 0) {
         setStaffList(freshStaff);
@@ -1203,10 +1297,41 @@ export default function App() {
     }
   };
 
-  // Sub-task Toggle Handler
+  // Sub-task Toggle Handler with Strict Proof Validation
   const handleToggleSubTask = async (taskId: string, subTaskId: string) => {
     const target = tasks.find((t) => t.id === taskId);
     if (!target || !target.subTasks) return;
+
+    // Prevent modifying subtasks if task is already submitted & locked
+    if (target.completed) {
+      setToastFeedback({
+        id: `toast-locked-${Date.now()}`,
+        text: '🔒 Task is already submitted and locked. It cannot be modified or undone.',
+        type: 'info',
+      });
+      return;
+    }
+
+    const sub = target.subTasks.find((st) => st.id === subTaskId);
+    if (!sub) return;
+
+    // Strict validation: If attempting to mark subtask done, verify mandatory proof for this specific subtask
+    if (!sub.isDone) {
+      const isReqPhoto = Boolean(sub.isPhotoMandatory || sub.mandatoryMedia === 'photo');
+      const hasPhoto = Boolean(sub.media && sub.media.some((m) => m.type === 'photo'));
+      if (isReqPhoto && !hasPhoto) {
+        setValidationWarning({
+          taskId: target.id,
+          taskTitle: target.title,
+          missingItems: [`Subtask "${sub.title}": Photo Proof is strictly required! Please take a photo.`],
+          missingPhoto: true,
+          missingVideo: false,
+          missingNote: false,
+        });
+        setBlockedTaskId(target.id);
+        return;
+      }
+    }
 
     const updatedSubTasks = target.subTasks.map((st) => {
       if (st.id === subTaskId) {
@@ -1221,7 +1346,9 @@ export default function App() {
     });
 
     const allSubTasksDone = updatedSubTasks.length > 0 && updatedSubTasks.every((st) => st.isDone);
-    const isTaskNowCompleted = allSubTasksDone ? true : target.subTasks.length > 0 && target.completed && !allSubTasksDone ? false : target.completed;
+
+    // If subtasks are not all done, ensure task is not completed.
+    const isTaskNowCompleted = target.completed && !allSubTasksDone ? false : target.completed;
 
     const updatedTask: TaskItem = {
       ...target,
@@ -1250,6 +1377,64 @@ export default function App() {
       }
     } catch (err) {
       console.error('Failed to update subtask via queue:', err);
+    }
+  };
+
+  // Split nested subtasks into individual standalone TaskItems
+  const handleUnpackSubTasks = async (taskId: string) => {
+    const target = tasks.find((t) => t.id === taskId);
+    if (!target || !target.subTasks || target.subTasks.length === 0) return;
+
+    triggerHaptic('success');
+    const nowIso = new Date().toISOString();
+    const createdTasks: TaskItem[] = target.subTasks.map((s, idx) => ({
+      id: `task-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 4)}`,
+      title: s.title,
+      checklistHeader: target.checklistHeader || 'General Operations',
+      startTime: target.startTime || '09:00 AM',
+      endTime: target.endTime || target.deadline || '10:30 AM',
+      deadline: target.deadline || target.endTime || '10:30 AM',
+      department: target.department || 'General',
+      priority: target.priority || 'today',
+      completed: s.isDone,
+      completedAt: s.completedAt,
+      isPhotoMandatory: Boolean(s.isPhotoMandatory || s.mandatoryMedia === 'photo'),
+      isVideoMandatory: Boolean(s.isVideoMandatory || s.mandatoryMedia === 'video'),
+      isNoteMandatory: Boolean(s.isNoteMandatory),
+      mandatoryMedia: s.isPhotoMandatory || s.mandatoryMedia === 'photo' ? 'photo' : s.isVideoMandatory || s.mandatoryMedia === 'video' ? 'video' : 'none',
+      media: s.media || [],
+      notes: s.notes || '',
+      outlet: target.outlet || activeOutlet,
+      assignee: target.assignee,
+      assigneeId: target.assigneeId,
+      assigneeDesignation: target.assigneeDesignation,
+      assigneeRoleType: target.assigneeRoleType,
+      createdAt: target.createdAt || nowIso,
+      assignedAt: target.assignedAt || nowIso,
+      assignedBy: target.assignedBy,
+      subTasks: [],
+    }));
+
+    // Replace the parent task with the new individual tasks
+    setTasks((prev) => [...createdTasks, ...prev.filter((t) => t.id !== taskId)]);
+
+    setToastFeedback({
+      id: `toast-split-${Date.now()}`,
+      text: `Split checklist into ${createdTasks.length} separate individual task cards!`,
+      type: 'success',
+    });
+
+    try {
+      await executeTaskOperationWithQueue({
+        type: 'DELETE_TASK',
+        taskId,
+      });
+      await executeTaskOperationWithQueue({
+        type: 'BATCH_SAVE_TASKS',
+        tasks: createdTasks,
+      });
+    } catch (e) {
+      console.error('Failed to unpack subtasks via queue:', e);
     }
   };
 
@@ -1360,20 +1545,24 @@ export default function App() {
     const target = tasks.find((t) => t.id === id);
     if (!target) return;
 
+    // Prevent undoing / reopening submitted tasks
+    if (target.completed) {
+      setToastFeedback({
+        id: `toast-locked-${Date.now()}`,
+        text: '🔒 Task is already submitted & locked. It cannot be reopened or undone.',
+        type: 'info',
+      });
+      return;
+    }
+
     // If trying to mark as completed, validate ONLY the proofs that were configured for this task/subtasks
     if (!target.completed) {
       const reqPhoto = Boolean(target.isPhotoMandatory || target.mandatoryMedia === 'photo');
       const reqVideo = Boolean(target.isVideoMandatory || target.mandatoryMedia === 'video');
       const reqNote = Boolean(target.isNoteMandatory);
 
-      const hasPhoto = Boolean(
-        (target.media && target.media.some((m) => m.type === 'photo')) ||
-        (target.subTasks && target.subTasks.some((st) => st.media && st.media.some((m) => m.type === 'photo')))
-      );
-      const hasVideo = Boolean(
-        (target.media && target.media.some((m) => m.type === 'video')) ||
-        (target.subTasks && target.subTasks.some((st) => st.media && st.media.some((m) => m.type === 'video')))
-      );
+      const hasPhoto = Boolean(target.media && target.media.some((m) => m.type === 'photo'));
+      const hasVideo = Boolean(target.media && target.media.some((m) => m.type === 'video'));
       const hasNote = Boolean(target.notes && target.notes.trim());
 
       const missingItems: string[] = [];
@@ -1395,17 +1584,18 @@ export default function App() {
         missingNoteFlag = true;
       }
 
-      // 2. Check nested sub-tasks proofs if any sub-task specifically requires proofs
+      // 2. Check nested sub-tasks completion and proofs if any sub-task specifically requires proofs
       if (target.subTasks && target.subTasks.length > 0) {
+        const pendingSubTasks = target.subTasks.filter((s) => !s.isDone);
+        if (pendingSubTasks.length > 0) {
+          missingItems.push(`${pendingSubTasks.length} Sub-task(s) still incomplete`);
+        }
+
         target.subTasks.forEach((s) => {
           const sReqPhoto = Boolean(s.isPhotoMandatory || s.mandatoryMedia === 'photo');
-          const sHasPhoto = Boolean(
-            (s.media && s.media.some((m) => m.type === 'photo')) || hasPhoto
-          );
+          const sHasPhoto = Boolean(s.media && s.media.some((m) => m.type === 'photo'));
           const sReqVideo = Boolean(s.isVideoMandatory || s.mandatoryMedia === 'video');
-          const sHasVideo = Boolean(
-            (s.media && s.media.some((m) => m.type === 'video')) || hasVideo
-          );
+          const sHasVideo = Boolean(s.media && s.media.some((m) => m.type === 'video'));
           const sReqNote = Boolean(s.isNoteMandatory);
           const sHasNote = Boolean(s.notes && s.notes.trim());
 
@@ -1876,6 +2066,45 @@ export default function App() {
     if (true) {
       setTasks([]);
     }
+  };
+
+  // Jump to specific task from the 10-Minute Pre-Task Alarm Modal
+  const handleJumpToTaskFromAlarm = (taskId: string) => {
+    const target = tasks.find((t) => t.id === taskId);
+    if (target) {
+      if (target.department && currentStation !== 'Manager' && !isStaff) {
+        setCurrentStation(target.department as StationMode);
+      }
+      setFilterStatus('all');
+      setActiveMobileTab('tasks');
+
+      setTimeout(() => {
+        const el = document.getElementById(`task-item-${taskId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('ring-4', 'ring-red-500');
+          setTimeout(() => el.classList.remove('ring-4', 'ring-red-500'), 3000);
+        }
+      }, 300);
+    }
+  };
+
+  // Manually trigger 10-minute Pre-Task alarm test
+  const handleTriggerTestAlarm = async () => {
+    const sampleTask = tasks.find((t) => !t.completed) || tasks[0];
+    await triggerTestPreTaskAlarm(sampleTask, (task, minutesRemaining) => {
+      setActiveAlarm({
+        isOpen: true,
+        task,
+        minutesRemaining,
+      });
+    });
+
+    setToastFeedback({
+      id: `toast-alarm-test-${Date.now()}`,
+      text: '🚨 Extreme loud alarm siren & mobile PWA notification triggered!',
+      type: 'success',
+    });
   };
 
   // Task Counts by Department for the Station Selector Modal (Filtered by activeOutlet)
@@ -3037,6 +3266,7 @@ export default function App() {
                         onToggleTask={handleToggleTask}
                         onEditTask={canEditTask ? handleEditTask : undefined}
                         onDeleteTask={canDeleteTask ? handleDeleteTask : undefined}
+                        onUnpackSubTasks={handleUnpackSubTasks}
                         onDeleteChecklist={canDeleteTask ? handleDeleteChecklist : undefined}
                         onRenameChecklist={canEditTask ? handleRenameChecklist : undefined}
                         onViewMedia={setSelectedMedia}
@@ -3102,6 +3332,7 @@ export default function App() {
                       onToggleTask={handleToggleTask}
                       onEditTask={canEditTask ? handleEditTask : undefined}
                       onDeleteTask={canDeleteTask ? handleDeleteTask : undefined}
+                      onUnpackSubTasks={handleUnpackSubTasks}
                       onViewMedia={setSelectedMedia}
                       onAddMediaToTask={handleAddMediaToTask}
                       onUpdateTaskNote={handleUpdateTaskNote}
@@ -3159,6 +3390,7 @@ export default function App() {
                   onToggleTask={handleToggleTask}
                   onEditTask={canEditTask ? handleEditTask : undefined}
                   onDeleteTask={canDeleteTask ? handleDeleteTask : undefined}
+                  onUnpackSubTasks={handleUnpackSubTasks}
                   onViewMedia={setSelectedMedia}
                   onAddMediaToTask={handleAddMediaToTask}
                   onUpdateTaskNote={handleUpdateTaskNote}
@@ -3181,6 +3413,7 @@ export default function App() {
                   onToggleTask={handleToggleTask}
                   onEditTask={canEditTask ? handleEditTask : undefined}
                   onDeleteTask={canDeleteTask ? handleDeleteTask : undefined}
+                  onUnpackSubTasks={handleUnpackSubTasks}
                   onViewMedia={setSelectedMedia}
                   onAddMediaToTask={handleAddMediaToTask}
                   onUpdateTaskNote={handleUpdateTaskNote}
@@ -3203,6 +3436,7 @@ export default function App() {
                   onToggleTask={handleToggleTask}
                   onEditTask={canEditTask ? handleEditTask : undefined}
                   onDeleteTask={canDeleteTask ? handleDeleteTask : undefined}
+                  onUnpackSubTasks={handleUnpackSubTasks}
                   onViewMedia={setSelectedMedia}
                   onAddMediaToTask={handleAddMediaToTask}
                   onUpdateTaskNote={handleUpdateTaskNote}
@@ -3266,6 +3500,19 @@ export default function App() {
         onOpenAdminApprovals={() => setIsAdminApprovalOpen(true)}
         pendingApprovalCount={pendingApprovalCount}
         onOpenTaskRegister={() => setIsTaskRegisterOpen(true)}
+        onTriggerTestAlarm={handleTriggerTestAlarm}
+      />
+
+      {/* 10-Minute Pre-Task Extreme Loud Siren & PWA Push Reminder Modal */}
+      <PreTaskAlarmModal
+        isOpen={activeAlarm.isOpen}
+        task={activeAlarm.task}
+        minutesRemaining={activeAlarm.minutesRemaining}
+        onClose={() => {
+          stopExtremeLoudAlarm();
+          setActiveAlarm((prev) => ({ ...prev, isOpen: false }));
+        }}
+        onJumpToTask={handleJumpToTaskFromAlarm}
       />
 
       {/* Admin Photo Verification & Task Approval Modal */}

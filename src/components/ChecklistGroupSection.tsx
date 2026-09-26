@@ -33,6 +33,7 @@ interface ChecklistGroupSectionProps {
   onToggleTask: (id: string) => void;
   onEditTask?: (task: TaskItem) => void;
   onDeleteTask?: (taskId: string) => void;
+  onUnpackSubTasks?: (taskId: string) => void;
   onDeleteChecklist?: (headerName: string) => void;
   onUpgradeChecklist?: (headerName: string) => void;
   onRenameChecklist?: (oldHeader: string, newHeader: string) => void;
@@ -56,6 +57,7 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
   onToggleTask,
   onEditTask,
   onDeleteTask,
+  onUnpackSubTasks,
   onDeleteChecklist,
   onUpgradeChecklist,
   onRenameChecklist,
@@ -413,6 +415,7 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
                   onToggle={onToggleTask}
                   onEditTask={onEditTask}
                   onDeleteTask={onDeleteTask}
+                  onUnpackSubTasks={onUnpackSubTasks}
                   onViewMedia={onViewMedia}
                   onAddMediaToTask={onAddMediaToTask}
                   onUpdateTaskNote={onUpdateTaskNote}
