@@ -14,7 +14,7 @@ import {
   Firestore,
 } from 'firebase/firestore';
 import firebaseConfigData from '../../firebase-applet-config.json';
-import { TaskItem, StaffMember, ShiftRecord, Outlet, INITIAL_OUTLETS } from '../types';
+import { TaskItem, StaffMember, ShiftRecord, Outlet, INITIAL_OUTLETS, DEFAULT_OUTLET } from '../types';
 import { INITIAL_STAFF } from '../data/staffData';
 
 const firebaseConfig = {
@@ -432,6 +432,7 @@ export async function saveStaffToFirebase(staff: StaffMember): Promise<StaffMemb
     roleType: staff?.roleType,
     outlet: staff?.outlet,
     hasPin: Boolean(staff?.pin),
+    hasPassword: Boolean(staff?.password),
     isActive: staff?.isActive !== false,
   });
 
@@ -458,6 +459,24 @@ export async function saveStaffToFirebase(staff: StaffMember): Promise<StaffMemb
       setDoc(staffRef, dataToSave, { merge: true }),
       setDoc(userRef, dataToSave, { merge: true }),
     ]);
+
+    // Immediately sync to localStorage cache so reload has updated credentials
+    try {
+      if (typeof window !== 'undefined') {
+        const stored = localStorage.getItem('amarii_staff_list_cache');
+        if (stored) {
+          const parsed: StaffMember[] = JSON.parse(stored);
+          const updated = parsed.map((s) => (s.id === staff.id ? { ...s, ...staff } : s));
+          if (!updated.some((s) => s.id === staff.id)) updated.push(staff);
+          localStorage.setItem('amarii_staff_list_cache', JSON.stringify(updated));
+        } else {
+          localStorage.setItem('amarii_staff_list_cache', JSON.stringify([staff]));
+        }
+      }
+    } catch (cacheErr) {
+      console.warn('Cache update warning:', cacheErr);
+    }
+
     const duration = Date.now() - startTime;
     console.log(
       `[Firestore DEBUG] SUCCESS: Saved staff "${staff.name}" to '${STAFF_COLLECTION}/${staff.id}' and '${USERS_COLLECTION}/${staff.id}' in ${duration}ms`
@@ -702,16 +721,24 @@ export function generateStaffId(name: string, roleType?: string, existingIds?: s
 }
 
 // Master synchronizer to guarantee all staff (Hemen Das, Aditya, Abhinash Dcosta, etc.) exist in BOTH 'staff' and 'users' collections in Firestore
+// CRITICAL: NEVER overwrites existing staff passwords, PINs, or credentials in Firestore with static defaults!
 export async function syncAllStaffAndUsersToFirestore(staffList?: StaffMember[]): Promise<{ count: number; error?: string }> {
   try {
+    // 1. Fetch current existing staff docs directly from Firestore to preserve user-customized passwords & PINs
+    const staffSnapshot = await getDocs(collection(db, STAFF_COLLECTION));
+    const existingStaffMap = new Map<string, Record<string, any>>();
+    staffSnapshot.forEach((d) => {
+      existingStaffMap.set(d.id, d.data());
+    });
+
     const combinedMap = new Map<string, StaffMember>();
     
-    // Always include INITIAL_STAFF (Hemen Das, Aditya, Abhinash Dcosta)
+    // Core default templates (used ONLY if document does not exist in Firestore yet)
     INITIAL_STAFF.forEach((s) => {
       if (s && s.id) combinedMap.set(s.id, s);
     });
 
-    // Merge with any custom staff passed in
+    // Merge with any staff passed in from active state
     if (staffList && staffList.length > 0) {
       staffList.forEach((s) => {
         if (s && s.id) combinedMap.set(s.id, s);
@@ -723,16 +750,43 @@ export async function syncAllStaffAndUsersToFirestore(staffList?: StaffMember[])
     );
     if (cleanStaff.length === 0) return { count: 0 };
 
-    console.log(`[Firestore SYNC] Synchronizing ${cleanStaff.length} staff into 'staff' AND 'users' collections:`, cleanStaff.map(s => `${s.name} (${s.id})`));
+    console.log(`[Firestore SYNC] Synchronizing ${cleanStaff.length} staff into 'staff' AND 'users' collections (preserving passwords)...`);
     const batch = writeBatch(db);
+    let writesCount = 0;
+
     cleanStaff.forEach((member) => {
-      const sanitized = sanitizeForFirestore({
+      const existing = existingStaffMap.get(member.id);
+
+      // If document already exists in Firestore, preserve existing password, pin, and custom fields!
+      const mergedMember: StaffMember = {
         ...member,
-        role: member.roleType || 'employee',
-        active: member.isActive !== false,
-        isActive: member.isActive !== false,
+        ...(existing || {}),
+        // If the member in memory has an updated password/pin that was explicitly modified, prioritize it; otherwise keep existing Firestore password/pin
+        password: member.password && member.password !== 'admin123' && member.password !== 'chef123' && member.password !== '2255'
+          ? member.password
+          : (existing?.password || member.password),
+        pin: member.pin && member.pin !== '9987' && member.pin !== '1234' && member.pin !== '2255'
+          ? member.pin
+          : (existing?.pin || member.pin),
+        name: member.name || existing?.name,
+        email: member.email || existing?.email,
+        phone: member.phone || existing?.phone,
+        department: member.department || existing?.department,
+        designation: member.designation || existing?.designation,
+        roleType: member.roleType || existing?.roleType || existing?.role || 'employee',
+        outlet: member.outlet || existing?.outlet || DEFAULT_OUTLET,
+        isActive: member.isActive !== false && member.active !== false && existing?.isActive !== false && existing?.active !== false,
+        active: member.isActive !== false && member.active !== false && existing?.isActive !== false && existing?.active !== false,
+      };
+
+      const sanitized = sanitizeForFirestore({
+        ...mergedMember,
+        role: mergedMember.roleType || 'employee',
+        active: mergedMember.isActive !== false,
+        isActive: mergedMember.isActive !== false,
         updatedAt: new Date().toISOString(),
       });
+
       // 1. Write to 'staff' collection
       const staffRef = doc(db, STAFF_COLLECTION, member.id);
       batch.set(staffRef, sanitized, { merge: true });
@@ -740,18 +794,21 @@ export async function syncAllStaffAndUsersToFirestore(staffList?: StaffMember[])
       // 2. Write to 'users' collection so user profiles appear in database/users!
       const userRef = doc(db, USERS_COLLECTION, member.id);
       batch.set(userRef, sanitized, { merge: true });
+      writesCount++;
     });
 
-    await batch.commit();
-    console.log(`[Firestore SYNC] SUCCESS: Persisted all ${cleanStaff.length} staff to BOTH '${STAFF_COLLECTION}' and '${USERS_COLLECTION}'!`);
-    return { count: cleanStaff.length };
+    if (writesCount > 0) {
+      await batch.commit();
+      console.log(`[Firestore SYNC] SUCCESS: Persisted all ${writesCount} staff to BOTH '${STAFF_COLLECTION}' and '${USERS_COLLECTION}'!`);
+    }
+    return { count: writesCount };
   } catch (err: any) {
     console.error('[Firestore SYNC] Error syncing staff/users to Firestore:', err);
     return { count: 0, error: err?.message || 'Sync failed' };
   }
 }
 
-// Check if tasks collection is empty and seed once; never re-seed deleted tasks
+// Check if tasks collection is empty and seed once; never re-seed deleted tasks or overwrite staff passwords
 export async function seedInitialTasksIfEmpty(initialTasks: TaskItem[], initialStaff: StaffMember[]) {
   try {
     const metaDocRef = doc(db, 'system_meta', 'seed_state');
@@ -794,11 +851,21 @@ export async function seedInitialTasksIfEmpty(initialTasks: TaskItem[], initialS
 
       // Purge any legacy demo staff from Firestore once during setup
       await purgeLegacyDemoStaffFromFirestore();
-    }
 
-    // Always ensure core staff (Hemen Das, Head Chef Aditya, Manager Abhinash Dcosta) are present in Firestore 'staff' and 'users'
-    console.log('[Firestore] Ensuring core staff exist in staff and users collections...');
-    await syncAllStaffAndUsersToFirestore(initialStaff);
+      // First run only: ensure initial staff exist
+      await syncAllStaffAndUsersToFirestore(initialStaff);
+    } else {
+      // If already seeded, check if any core staff is missing without overwriting existing staff passwords
+      try {
+        const existingSnap = await getDocs(collection(db, STAFF_COLLECTION));
+        if (existingSnap.empty) {
+          console.log('[Firestore] Staff collection empty, initializing staff...');
+          await syncAllStaffAndUsersToFirestore(initialStaff);
+        }
+      } catch (checkErr) {
+        console.warn('Staff existence check warning:', checkErr);
+      }
+    }
   } catch (err) {
     console.warn('Firestore seed check notice:', err);
   }
