@@ -27,12 +27,18 @@ import {
   Eye,
   Check,
   Flame,
+  Table,
+  List,
+  Share2,
+  Loader2,
 } from 'lucide-react';
 import { TaskItem, StaffMember, TaskDepartment, TaskMedia } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth, isHemenDas } from '../context/AuthContext';
 import { evaluateTaskTimeStatus } from '../utils/timeEvaluation';
 import { exportReportAsPdf, exportReportAsExcel, exportReportAsDoc } from '../utils/reportExport';
+import { ChecklistAuditModal } from './ChecklistAuditModal';
+import { generateChecklistAuditPdf } from '../utils/checklistPdfGenerator';
 
 interface TaskRegisterViewProps {
   tasks: TaskItem[];
@@ -69,6 +75,21 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
   const [selectedStatus, setSelectedStatus] = useState<'all' | 'completed_ontime' | 'breached' | 'pending' | 'rejected' | 'approved'>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'priority' | 'status'>('date_desc');
+
+  // Modern Register Layout Mode: Table or List
+  const [registerLayout, setRegisterLayout] = useState<'table' | 'list'>('table');
+  const [shareToastMsg, setShareToastMsg] = useState<string | null>(null);
+  const [downloadingTaskId, setDownloadingTaskId] = useState<string | null>(null);
+
+  // Exact Read-Only Audit Mode Modal State
+  const [auditModalData, setAuditModalData] = useState<{
+    isOpen: boolean;
+    checklistHeader: string;
+    tasks: TaskItem[];
+    submittedBy?: string;
+    submittedAt?: string;
+    department?: string;
+  } | null>(null);
 
   // Rejection modal inside register
   const [rejectingTaskId, setRejectingTaskId] = useState<string | null>(null);
@@ -283,6 +304,96 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const handleViewForm = (entry: (typeof registeredEntries)[0]) => {
+    const { task } = entry;
+    const header = task.checklistHeader || (task.department ? `${task.department} Checklist` : 'General Operations');
+
+    // 1. Gather all sibling tasks belonging to this submission batch
+    let relatedTasks: TaskItem[] = [];
+    const match = task.id?.match(/finalized-shift-(\d+)-/);
+    if (match) {
+      const timestampKey = match[1];
+      relatedTasks = tasks.filter((t) => t.id?.includes(`finalized-shift-${timestampKey}-`));
+    }
+
+    // 2. If no timestamp match, gather tasks matching checklistHeader and submittedAt
+    if (relatedTasks.length === 0 && task.submittedAt) {
+      relatedTasks = tasks.filter(
+        (t) =>
+          (t.checklistHeader === header || t.department === task.department) &&
+          t.submittedAt === task.submittedAt
+      );
+    }
+
+    // 3. Fallback: gather all tasks sharing this checklist header
+    if (relatedTasks.length === 0) {
+      relatedTasks = tasks.filter((t) => t.checklistHeader === header);
+    }
+
+    // Ensure the clicked task is in the list
+    if (!relatedTasks.some((t) => t.id === task.id)) {
+      relatedTasks = [task, ...relatedTasks];
+    }
+
+    setAuditModalData({
+      isOpen: true,
+      checklistHeader: header,
+      tasks: relatedTasks,
+      submittedBy: task.submittedBy || task.assignee || entry.staff?.name || 'Staff Member',
+      submittedAt: task.submittedAt || task.completedAt || entry.assignedDate,
+      department: (task.department || 'General Operations') as string,
+    });
+  };
+
+  const handleDownloadPdf = async (entry: (typeof registeredEntries)[0]) => {
+    const { task } = entry;
+    const header = task.checklistHeader || (task.department ? `${task.department} Checklist` : 'General Operations');
+
+    setDownloadingTaskId(task.id);
+    try {
+      let relatedTasks: TaskItem[] = [];
+      const match = task.id?.match(/finalized-shift-(\d+)-/);
+      if (match) {
+        const timestampKey = match[1];
+        relatedTasks = tasks.filter((t) => t.id?.includes(`finalized-shift-${timestampKey}-`));
+      }
+
+      if (relatedTasks.length === 0 && task.submittedAt) {
+        relatedTasks = tasks.filter(
+          (t) =>
+            (t.checklistHeader === header || t.department === task.department) &&
+            t.submittedAt === task.submittedAt
+        );
+      }
+
+      if (relatedTasks.length === 0) {
+        relatedTasks = tasks.filter((t) => t.checklistHeader === header);
+      }
+
+      if (!relatedTasks.some((t) => t.id === task.id)) {
+        relatedTasks = [task, ...relatedTasks];
+      }
+
+      const pdfResult = await generateChecklistAuditPdf({
+        checklistHeader: header,
+        department: (task.department || 'General Operations') as string,
+        submittedBy: task.submittedBy || task.assignee || entry.staff?.name || 'Staff Member',
+        submittedAt: task.submittedAt || task.completedAt || entry.assignedDate,
+        tasks: relatedTasks,
+      });
+
+      pdfResult.download();
+      setShareToastMsg(`✓ Downloaded ${pdfResult.filename}`);
+      setTimeout(() => setShareToastMsg(null), 4000);
+    } catch (err) {
+      console.error('Checklist PDF download error:', err);
+      setShareToastMsg('❌ Failed to generate PDF');
+      setTimeout(() => setShareToastMsg(null), 4000);
+    } finally {
+      setDownloadingTaskId(null);
+    }
   };
 
   return (
@@ -651,26 +762,63 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
 
       {/* 4. Task Register Ledger Table & Cards */}
       <div
-        className={`border-2 sm:border-4 shadow-xl overflow-hidden ${
-          isLightMode ? 'bg-white border-zinc-950' : 'bg-zinc-950 border-zinc-800'
+        className={`rounded-lg border shadow-xl overflow-hidden ${
+          isLightMode ? 'bg-white border-zinc-200' : 'bg-[#1a231e] border-zinc-800'
         }`}
       >
-        <div className="p-3 sm:p-4 bg-zinc-950 text-white flex items-center justify-between">
+        {/* Ledger Header with Table / Cards View Switcher */}
+        <div className="p-3 sm:p-4 bg-zinc-950 text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <ClipboardList className="w-5 h-5 text-red-500 stroke-[2.5]" />
-            <span className="text-xs sm:text-sm font-black uppercase tracking-wider">
-              Register Entries ({filteredEntries.length} Records Found)
-            </span>
+            <ClipboardList className="w-5 h-5 text-[#673ab7] stroke-[2.5]" />
+            <div>
+              <span className="text-xs sm:text-sm font-bold uppercase tracking-wider block">
+                Master Task Register ({filteredEntries.length} Records Found)
+              </span>
+              <span className="text-[10px] text-zinc-400">
+                Official Operational Audit Register • Permanent Log
+              </span>
+            </div>
           </div>
-          <span className="text-[10px] font-mono uppercase text-zinc-400">
-            Auto-saved in Firestore
-          </span>
+
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            {/* View Mode Toggle: Modern Table vs Modern Cards */}
+            <div className="flex items-center bg-zinc-900 border border-zinc-700 p-0.5 rounded-md">
+              <button
+                type="button"
+                id="register-view-mode-table"
+                onClick={() => setRegisterLayout('table')}
+                className={`px-3 py-1 text-xs font-bold rounded flex items-center gap-1.5 transition cursor-pointer ${
+                  registerLayout === 'table'
+                    ? 'bg-[#673ab7] text-white shadow-xs'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <Table className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Table Layout</span>
+              </button>
+              <button
+                type="button"
+                id="register-view-mode-list"
+                onClick={() => setRegisterLayout('list')}
+                className={`px-3 py-1 text-xs font-bold rounded flex items-center gap-1.5 transition cursor-pointer ${
+                  registerLayout === 'list'
+                    ? 'bg-[#673ab7] text-white shadow-xs'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <List className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Cards Layout</span>
+              </button>
+            </div>
+          </div>
         </div>
 
         {filteredEntries.length === 0 ? (
           <div className="p-12 text-center space-y-3">
             <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto" />
-            <h3 className="text-base sm:text-lg font-black uppercase">No Register Entries Match Your Filters</h3>
+            <h3 className="text-base sm:text-lg font-black uppercase text-zinc-900 dark:text-zinc-100">
+              No Register Entries Match Your Filters
+            </h3>
             <p className="text-xs text-zinc-500 max-w-md mx-auto">
               Try adjusting the month, date, time slot, or department filters to view more tasks.
             </p>
@@ -685,221 +833,403 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
                 setSelectedStatus('all');
                 setSearchQuery('');
               }}
-              className="px-4 py-2 bg-zinc-900 text-white text-xs font-black uppercase tracking-tight hover:bg-black transition cursor-pointer mt-2"
+              className="px-4 py-2 bg-[#673ab7] text-white text-xs font-bold uppercase tracking-tight hover:bg-[#58309e] transition cursor-pointer mt-2 rounded"
             >
               Reset All Filters
             </button>
           </div>
+        ) : registerLayout === 'table' ? (
+          /* ======================================================== */
+          /* 1. MODERN TABLE LAYOUT */
+          /* ======================================================== */
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr
+                  className={`border-b text-[11px] font-black uppercase tracking-wider ${
+                    isLightMode
+                      ? 'bg-zinc-100/90 text-zinc-700 border-zinc-200'
+                      : 'bg-zinc-900 text-zinc-300 border-zinc-800'
+                  }`}
+                >
+                  <th className="py-3 px-3 sm:px-4">Date & Time</th>
+                  <th className="py-3 px-3 sm:px-4">Checklist & Question</th>
+                  <th className="py-3 px-3 sm:px-4">Staff Name</th>
+                  <th className="py-3 px-3 sm:px-4">Status & Outcome</th>
+                  <th className="py-3 px-3 sm:px-4 text-right">Audit Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800/80">
+                {filteredEntries.map((entry, idx) => {
+                  const { task, timeStatus, assignedDate, staff, isBreached } = entry;
+                  const checklistTitle =
+                    task.checklistHeader ||
+                    (task.department ? `${task.department} Checklist` : 'General Operations');
+                  const staffDisplay =
+                    task.submittedBy || task.assignee || staff?.name || 'Shift Staff';
+                  const designation = staff?.designation || task.assigneeDesignation;
+
+                  const dateStr = new Date(assignedDate).toLocaleDateString('en-IN', {
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric',
+                  });
+                  const timeStr = new Date(assignedDate).toLocaleTimeString('en-IN', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: true,
+                  });
+
+                  return (
+                    <tr
+                      key={`register-row-${task.id || 'no-id'}-${idx}`}
+                      className={`transition-colors duration-150 ${
+                        isLightMode
+                          ? 'hover:bg-purple-50/40 text-zinc-900'
+                          : 'hover:bg-purple-950/20 text-zinc-100'
+                      } ${
+                        isBreached && !task.completed
+                          ? 'bg-red-500/5'
+                          : task.completed
+                          ? 'bg-emerald-500/5'
+                          : ''
+                      }`}
+                    >
+                      {/* 1. Date & Time */}
+                      <td className="py-3 px-3 sm:px-4 align-top whitespace-nowrap">
+                        <div className="font-bold text-zinc-900 dark:text-zinc-100">{dateStr}</div>
+                        <div className="flex items-center gap-1 text-[10px] text-zinc-500 dark:text-zinc-400 font-mono mt-0.5">
+                          <Clock className="w-3 h-3 text-[#673ab7] shrink-0" />
+                          <span>{timeStr}</span>
+                        </div>
+                      </td>
+
+                      {/* 2. Checklist Name & Task Title */}
+                      <td className="py-3 px-3 sm:px-4 align-top max-w-[280px] sm:max-w-md">
+                        <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                          <span className="font-black text-[10px] uppercase px-2 py-0.5 rounded bg-purple-100 text-[#673ab7] dark:bg-purple-950/80 dark:text-purple-300 font-mono border border-purple-200 dark:border-purple-800">
+                            {checklistTitle}
+                          </span>
+                          <span className="text-[10px] font-semibold uppercase px-1.5 py-0.5 bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 rounded">
+                            {task.department || 'General'}
+                          </span>
+                          {task.priority === 'urgent' && (
+                            <span className="text-[9px] font-black uppercase px-1 py-0.2 bg-red-600 text-white rounded">
+                              Urgent
+                            </span>
+                          )}
+                        </div>
+                        <p className="font-bold text-xs sm:text-[13px] leading-tight text-zinc-950 dark:text-white">
+                          {task.title}
+                        </p>
+                        {task.notes && (
+                          <p className="text-[11px] italic text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-1">
+                            Note: "{task.notes}"
+                          </p>
+                        )}
+                      </td>
+
+                      {/* 3. Staff Name */}
+                      <td className="py-3 px-3 sm:px-4 align-top whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-6 h-6 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center text-[#673ab7] dark:text-purple-400 shrink-0">
+                            <User className="w-3.5 h-3.5" />
+                          </div>
+                          <div>
+                            <span className="font-bold text-xs text-zinc-900 dark:text-zinc-100 block">
+                              {staffDisplay}
+                            </span>
+                            {designation && (
+                              <span className="text-[10px] text-zinc-500 dark:text-zinc-400 block">
+                                {designation}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* 4. Status & Outcome */}
+                      <td className="py-3 px-3 sm:px-4 align-top whitespace-nowrap">
+                        <div className="space-y-1">
+                          {task.completed ? (
+                            <span
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-bold ${
+                                isBreached
+                                  ? 'bg-amber-100 text-amber-900 dark:bg-amber-950/60 dark:text-amber-300'
+                                  : 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300'
+                              }`}
+                            >
+                              <CheckCircle2 className="w-3 h-3 stroke-[2.5]" />
+                              <span>{isBreached ? 'Completed Late' : 'Completed On-Time'}</span>
+                            </span>
+                          ) : isBreached ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-black uppercase bg-red-600 text-white animate-pulse">
+                              <AlertTriangle className="w-3 h-3 stroke-[3]" />
+                              <span>Time Breached</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-bold bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
+                              <Clock className="w-3 h-3" />
+                              <span>Pending Response</span>
+                            </span>
+                          )}
+
+                          {/* Media Proof Preview Chips */}
+                          {task.media && task.media.length > 0 && (
+                            <div className="flex items-center gap-1 text-[10px] text-zinc-500 pt-0.5">
+                              <Camera className="w-3 h-3 text-emerald-500" />
+                              <span>{task.media.length} proof attached</span>
+                            </div>
+                          )}
+
+                          {/* Approval Status */}
+                          {task.approvalStatus === 'approved' && (
+                            <div className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                              <ShieldCheck className="w-3 h-3" />
+                              <span>Approved</span>
+                            </div>
+                          )}
+                          {task.approvalStatus === 'rejected' && (
+                            <div className="text-[10px] font-bold text-red-600 dark:text-red-400 flex items-center gap-1">
+                              <XCircle className="w-3 h-3" />
+                              <span>Rejected</span>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* 5. Prominent 'View Form' & Dedicated [PDF] Download Buttons */}
+                      <td className="py-3 px-3 sm:px-4 align-top text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-1.5">
+                          {/* Small Red [PDF] Download Badge/Button */}
+                          <button
+                            type="button"
+                            id={`table-pdf-btn-${task.id}`}
+                            onClick={() => handleDownloadPdf(entry)}
+                            disabled={downloadingTaskId === task.id}
+                            className={`px-2 py-1.5 bg-red-600 hover:bg-red-700 text-white text-[11px] font-black uppercase tracking-wider rounded shadow-xs flex items-center gap-1 transition active:scale-95 cursor-pointer shrink-0 ${
+                              downloadingTaskId === task.id ? 'opacity-75 cursor-wait' : ''
+                            }`}
+                            title="Directly download official submitted audit PDF"
+                          >
+                            {downloadingTaskId === task.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                            ) : (
+                              <Download className="w-3 h-3 stroke-[2.5] shrink-0" />
+                            )}
+                            <span>PDF</span>
+                          </button>
+
+                          {/* Prominent View Form Button */}
+                          <button
+                            type="button"
+                            id={`view-form-btn-${task.id}`}
+                            onClick={() => handleViewForm(entry)}
+                            className="px-3 py-1.5 bg-[#673ab7] hover:bg-[#58309e] text-white text-xs font-bold rounded-md shadow-xs flex items-center gap-1.5 transition active:scale-95 cursor-pointer shrink-0"
+                            title="Open exact submitted Google Form read-only audit view"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                            <span>View Form</span>
+                          </button>
+
+                          {/* Admin Quick Governance */}
+                          {isAdmin && (
+                            <>
+                              {task.approvalStatus !== 'approved' && onApproveTask && (
+                                <button
+                                  type="button"
+                                  onClick={() => onApproveTask(task.id)}
+                                  className="p-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded cursor-pointer transition"
+                                  title="Approve Task"
+                                >
+                                  <Check className="w-3.5 h-3.5 stroke-[3]" />
+                                </button>
+                              )}
+                              {task.approvalStatus !== 'rejected' && onRejectTask && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRejectingTaskId(task.id);
+                                    setRejectionReason('');
+                                  }}
+                                  className="p-1.5 bg-red-600 hover:bg-red-500 text-white rounded cursor-pointer transition"
+                                  title="Reject Task"
+                                >
+                                  <XCircle className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         ) : (
+          /* ======================================================== */
+          /* 2. MODERN LIST / CARDS LAYOUT */
+          /* ======================================================== */
           <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {filteredEntries.map((entry, idx) => {
               const { task, timeStatus, assignedDate, staff, isBreached } = entry;
-              const hasPhotos = task.media && task.media.some((m) => m.type === 'photo');
-              const hasVideos = task.media && task.media.some((m) => m.type === 'video');
+              const checklistTitle =
+                task.checklistHeader ||
+                (task.department ? `${task.department} Checklist` : 'General Operations');
+              const staffDisplay =
+                task.submittedBy || task.assignee || staff?.name || 'Shift Staff';
+              const designation = staff?.designation || task.assigneeDesignation;
+
+              const dateStr = new Date(assignedDate).toLocaleDateString('en-IN', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric',
+              });
+              const timeStr = new Date(assignedDate).toLocaleTimeString('en-IN', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: true,
+              });
 
               return (
                 <div
-                  key={`register-task-${task.id || 'no-id'}-${idx}`}
+                  key={`register-card-${task.id || 'no-id'}-${idx}`}
                   className={`p-4 sm:p-5 transition hover:bg-zinc-50 dark:hover:bg-zinc-900/60 ${
                     isBreached && !task.completed
-                      ? 'bg-red-950/10 border-l-4 border-l-red-600'
+                      ? 'border-l-4 border-l-red-600 bg-red-950/5'
                       : task.completed
-                      ? 'bg-emerald-950/5'
-                      : ''
+                      ? 'border-l-4 border-l-emerald-600 bg-emerald-950/5'
+                      : 'border-l-4 border-l-purple-500'
                   }`}
                 >
                   <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                    {/* Left Column: Index, Task Title, Assigned To & Given By, Time window */}
+                    {/* Left Column: Details */}
                     <div className="space-y-2 flex-1 min-w-0">
-                      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                        <span className="text-[10px] font-mono font-black text-zinc-400 bg-zinc-200 dark:bg-zinc-800 px-1.5 py-0.5">
+                      {/* Top Badges Row */}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[10px] font-mono font-bold text-zinc-400 bg-zinc-200 dark:bg-zinc-800 px-1.5 py-0.5 rounded">
                           #{idx + 1}
                         </span>
 
-                        {/* Department Badge */}
-                        <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-zinc-900 text-white dark:bg-zinc-800 dark:text-zinc-200">
+                        {/* Checklist Name */}
+                        <span className="text-[11px] font-bold uppercase px-2 py-0.5 bg-purple-100 text-[#673ab7] dark:bg-purple-950/80 dark:text-purple-300 rounded font-mono border border-purple-200 dark:border-purple-800">
+                          {checklistTitle}
+                        </span>
+
+                        <span className="text-[10px] font-semibold uppercase px-1.5 py-0.5 bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 rounded">
                           {task.department || 'General'}
                         </span>
 
-                        {/* Checklist Header */}
-                        {task.checklistHeader && (
-                          <span className="text-[10px] font-bold uppercase px-2 py-0.5 bg-blue-100 text-blue-900 dark:bg-blue-950 dark:text-blue-300">
-                            {task.checklistHeader}
-                          </span>
-                        )}
-
-                        {/* Priority */}
                         {task.priority === 'urgent' && (
-                          <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-red-600 text-white flex items-center gap-1">
+                          <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-red-600 text-white rounded flex items-center gap-1">
                             <AlertTriangle className="w-3 h-3 stroke-[3]" />
                             URGENT
                           </span>
                         )}
-
-                        {/* Mention Time Badge */}
-                        <span
-                          className={`text-[10px] font-mono font-black uppercase px-2 py-0.5 border flex items-center gap-1 ${
-                            isBreached && !task.completed
-                              ? 'bg-red-600 text-white border-red-600 animate-pulse'
-                              : isLightMode
-                              ? 'bg-zinc-100 text-zinc-900 border-zinc-300'
-                              : 'bg-zinc-800 text-zinc-200 border-zinc-700'
-                          }`}
-                        >
-                          <Clock className="w-3 h-3" />
-                          <span>Mention Time: {timeStatus.timeDisplay}</span>
-                        </span>
                       </div>
 
-                      {/* Title */}
-                      <h4 className="text-sm sm:text-base font-black uppercase tracking-tight text-zinc-950 dark:text-white">
+                      {/* Question / Task Title */}
+                      <h4 className="text-sm sm:text-base font-bold text-zinc-950 dark:text-white uppercase tracking-tight">
                         {task.title}
                       </h4>
 
-                      {/* Audit Details: Kab Diya, Kisko Diya, Kisne Diya */}
+                      {/* Key Details Grid: Date, Staff, Status */}
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 text-xs">
-                        {/* 1. Kab Diya (Assigned Time) */}
+                        {/* 1. Date */}
                         <div className="flex items-center gap-1.5 text-zinc-600 dark:text-zinc-400">
                           <Calendar className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
                           <span>
-                            <strong>Kab Diya:</strong>{' '}
-                            {new Date(assignedDate).toLocaleDateString('en-IN', {
-                              day: '2-digit',
-                              month: 'short',
-                              year: 'numeric',
-                            })}{' '}
-                            at{' '}
-                            {new Date(assignedDate).toLocaleTimeString('en-IN', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
+                            <strong>Date:</strong> {dateStr} at {timeStr}
                           </span>
                         </div>
 
-                        {/* 2. Kisko Diya (Assignee) */}
+                        {/* 2. Staff Name */}
                         <div className="flex items-center gap-1.5 text-zinc-600 dark:text-zinc-400">
-                          <User className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                          <User className="w-3.5 h-3.5 text-[#673ab7] shrink-0" />
                           <span>
-                            <strong>Kisko Diya:</strong>{' '}
+                            <strong>Staff:</strong>{' '}
                             <span className="font-bold text-zinc-900 dark:text-white">
-                              {task.assignee || staff?.name || 'Department Shift Staff'}
+                              {staffDisplay}
                             </span>
-                            {staff?.designation ? ` (${staff.designation})` : ''}
+                            {designation ? ` (${designation})` : ''}
                           </span>
                         </div>
 
-                        {/* 3. Kisne Diya (Assigner) */}
-                        <div className="flex items-center gap-1.5 text-zinc-600 dark:text-zinc-400">
-                          <ShieldCheck className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                          <span>
-                            <strong>Kisne Diya:</strong>{' '}
-                            <span className="font-bold text-zinc-900 dark:text-white">
-                              {task.assignedBy || 'Hemen Das (Owner & GM)'}
+                        {/* 3. Status */}
+                        <div className="flex items-center gap-1.5">
+                          {task.completed ? (
+                            <span className="font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>{isBreached ? 'Completed Late' : 'Completed On-Time'}</span>
                             </span>
-                          </span>
+                          ) : isBreached ? (
+                            <span className="font-bold text-red-600 flex items-center gap-1 animate-pulse">
+                              <AlertTriangle className="w-3.5 h-3.5" />
+                              <span>Time Breached</span>
+                            </span>
+                          ) : (
+                            <span className="font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5" />
+                              <span>Pending</span>
+                            </span>
+                          )}
                         </div>
                       </div>
 
-                      {/* Notes / Rejection reasons */}
+                      {/* Notes if any */}
                       {task.notes && (
-                        <p className="text-xs bg-zinc-100 dark:bg-zinc-900 p-2 border-l-2 border-zinc-400 dark:border-zinc-700 italic">
+                        <p className="text-xs bg-zinc-100 dark:bg-zinc-900 p-2 border-l-2 border-zinc-400 dark:border-zinc-700 italic rounded-r">
                           "{task.notes}"
-                        </p>
-                      )}
-                      {task.rejectionReason && (
-                        <p className="text-xs bg-red-950/80 text-red-200 p-2 border-l-2 border-red-500 font-bold">
-                          ❌ Rejection Reason: "{task.rejectionReason}"
                         </p>
                       )}
                     </div>
 
-                    {/* Right Column: "Unka Kya Hua" (Status, Proofs, Action Buttons) */}
-                    <div className="flex flex-col sm:flex-row lg:flex-col items-start lg:items-end justify-between gap-3 flex-shrink-0">
-                      {/* Status Badges */}
-                      <div className="space-y-1 text-left lg:text-right">
-                        <span className="text-[10px] font-black uppercase text-zinc-400 block">
-                          Unka Kya Hua (Outcome):
-                        </span>
-                        {task.completed ? (
-                          <div className="space-y-0.5">
-                            <span
-                              className={`px-2.5 py-1 text-xs font-black uppercase flex items-center gap-1.5 ${
-                                isBreached
-                                  ? 'bg-amber-600 text-white'
-                                  : 'bg-emerald-600 text-white'
-                              }`}
-                            >
-                              <CheckCircle2 className="w-3.5 h-3.5" />
-                              {isBreached ? 'Completed Late (Breached)' : 'Completed On-Time'}
-                            </span>
-                            {task.completedAt && (
-                              <span className="text-[10px] font-mono text-zinc-500 block">
-                                Done: {new Date(task.completedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} by {task.submittedBy || 'Staff'}
-                              </span>
-                            )}
-                          </div>
-                        ) : isBreached ? (
-                          <span className="px-2.5 py-1 text-xs font-black uppercase bg-red-600 text-white flex items-center gap-1.5 animate-pulse shadow">
-                            <AlertTriangle className="w-3.5 h-3.5 stroke-[3]" />
-                            🚨 TIME BREACH (SLA Missed)
-                          </span>
+                    {/* Right Column: Prominent 'View Form' & [PDF] Buttons & Admin Actions */}
+                    <div className="flex items-center lg:items-end justify-between lg:justify-end gap-2 shrink-0">
+                      {/* Small Red [PDF] Download Badge/Button */}
+                      <button
+                        type="button"
+                        id={`card-pdf-btn-${task.id}`}
+                        onClick={() => handleDownloadPdf(entry)}
+                        disabled={downloadingTaskId === task.id}
+                        className={`px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-black uppercase tracking-wider rounded-md shadow-xs flex items-center gap-1.5 transition active:scale-95 cursor-pointer ${
+                          downloadingTaskId === task.id ? 'opacity-75 cursor-wait' : ''
+                        }`}
+                        title="Directly download official submitted audit PDF"
+                      >
+                        {downloadingTaskId === task.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                         ) : (
-                          <span className="px-2.5 py-1 text-xs font-black uppercase bg-zinc-800 text-amber-400 border border-amber-500/50 flex items-center gap-1.5">
-                            <Clock className="w-3.5 h-3.5" />
-                            ⏳ Pending / In Progress
-                          </span>
+                          <Download className="w-4 h-4 stroke-[2.5] shrink-0" />
                         )}
+                        <span>PDF</span>
+                      </button>
 
-                        {/* Approval Status */}
-                        {task.approvalStatus === 'approved' && (
-                          <span className="text-[10px] font-black uppercase text-emerald-500 flex items-center gap-1 lg:justify-end">
-                            <ShieldCheck className="w-3.5 h-3.5" />
-                            Approved by Hemen Das
-                          </span>
-                        )}
-                        {task.approvalStatus === 'rejected' && (
-                          <span className="text-[10px] font-black uppercase text-red-500 flex items-center gap-1 lg:justify-end">
-                            <XCircle className="w-3.5 h-3.5" />
-                            Rejected by Hemen Das
-                          </span>
-                        )}
-                      </div>
+                      {/* Prominent View Form Button */}
+                      <button
+                        type="button"
+                        id={`card-view-form-btn-${task.id}`}
+                        onClick={() => handleViewForm(entry)}
+                        className="px-4 py-2 bg-[#673ab7] hover:bg-[#58309e] text-white text-xs font-bold rounded-md shadow-xs flex items-center gap-2 transition active:scale-95 cursor-pointer"
+                        title="Open exact submitted Google Form read-only audit view"
+                      >
+                        <FileText className="w-4 h-4" />
+                        <span>View Form</span>
+                      </button>
 
-                      {/* Media Proof Preview Thumbnails */}
-                      {task.media && task.media.length > 0 && (
-                        <div className="flex items-center gap-1.5">
-                          {task.media.map((m) => (
-                            <button
-                              key={m.id}
-                              type="button"
-                              onClick={() => onViewMedia && onViewMedia(m)}
-                              className="relative w-9 h-9 border border-zinc-600 overflow-hidden hover:opacity-80 transition cursor-pointer"
-                              title={`View attached ${m.type} proof`}
-                            >
-                              {m.type === 'photo' ? (
-                                <img src={m.url} alt="Proof" className="w-full h-full object-cover" />
-                              ) : (
-                                <div className="w-full h-full bg-zinc-800 flex items-center justify-center text-white">
-                                  <Video className="w-4 h-4" />
-                                </div>
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Admin Quick Approval / Rejection buttons for Hemen Das */}
                       {isAdmin && (
-                        <div className="flex items-center gap-1.5 pt-1">
+                        <div className="flex items-center gap-1.5">
                           {task.approvalStatus !== 'approved' && onApproveTask && (
                             <button
                               type="button"
                               onClick={() => onApproveTask(task.id)}
-                              className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-black uppercase tracking-tight flex items-center gap-1 transition cursor-pointer"
-                              title="Officially Approve Task"
+                              className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded flex items-center gap-1 transition cursor-pointer"
+                              title="Approve Task"
                             >
-                              <Check className="w-3 h-3" />
-                              Approve
+                              <Check className="w-3.5 h-3.5 stroke-[3]" />
+                              <span>Approve</span>
                             </button>
                           )}
                           {task.approvalStatus !== 'rejected' && onRejectTask && (
@@ -909,20 +1239,11 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
                                 setRejectingTaskId(task.id);
                                 setRejectionReason('');
                               }}
-                              className="px-2 py-1 bg-red-600 hover:bg-red-500 text-white text-[10px] font-black uppercase tracking-tight flex items-center gap-1 transition cursor-pointer"
+                              className="px-2.5 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded flex items-center gap-1 transition cursor-pointer"
                               title="Reject Task"
                             >
-                              <XCircle className="w-3 h-3" />
-                              Reject
-                            </button>
-                          )}
-                          {onEditTask && (
-                            <button
-                              type="button"
-                              onClick={() => onEditTask(task)}
-                              className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] font-black uppercase tracking-tight transition cursor-pointer"
-                            >
-                              Edit
+                              <XCircle className="w-3.5 h-3.5" />
+                              <span>Reject</span>
                             </button>
                           )}
                         </div>
@@ -935,6 +1256,32 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Exact Read-Only Audit Mode Modal */}
+      {auditModalData && (
+        <ChecklistAuditModal
+          isOpen={auditModalData.isOpen}
+          onClose={() => setAuditModalData(null)}
+          checklistHeader={auditModalData.checklistHeader}
+          tasks={auditModalData.tasks}
+          submittedBy={auditModalData.submittedBy}
+          submittedAt={auditModalData.submittedAt}
+          department={auditModalData.department}
+          onViewMedia={onViewMedia}
+          onShareFeedback={(msg) => {
+            setShareToastMsg(msg);
+            setTimeout(() => setShareToastMsg(null), 4000);
+          }}
+        />
+      )}
+
+      {/* Share Toast Notification */}
+      {shareToastMsg && (
+        <div className="fixed bottom-6 right-6 z-50 p-3.5 bg-emerald-600 text-white text-xs font-bold rounded-lg shadow-2xl flex items-center gap-2 animate-in slide-in-from-bottom-3 duration-200">
+          <CheckCircle2 className="w-4 h-4 stroke-[2.5]" />
+          <span>{shareToastMsg}</span>
+        </div>
+      )}
 
       {/* Rejection Prompt Dialog */}
       {rejectingTaskId && (

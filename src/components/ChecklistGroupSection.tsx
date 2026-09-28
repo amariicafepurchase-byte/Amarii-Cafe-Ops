@@ -23,12 +23,15 @@ import {
   Send,
   FileCheck2,
   CheckCircle2,
+  Share2,
+  Loader2,
 } from 'lucide-react';
 import { TaskItem, ChecklistHeader, TaskMedia, StaffMember, HEADER_TIME_SUGGESTIONS } from '../types';
 import { TaskCard } from './TaskCard';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { evaluateTaskTimeStatus } from '../utils/timeEvaluation';
+import { shareChecklistUpdate } from '../utils/shareUtils';
 
 interface ChecklistGroupSectionProps {
   headerName?: ChecklistHeader | string;
@@ -92,6 +95,10 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
   const [renameDraft, setRenameDraft] = useState<string>(resolvedHeaderName);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [justSubmitted, setJustSubmitted] = useState<boolean>(false);
+  const [lastSubmittedTime, setLastSubmittedTime] = useState<string>('');
+  const [shareNotice, setShareNotice] = useState<string | null>(null);
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
+  const [submittedTasksSnapshot, setSubmittedTasksSnapshot] = useState<TaskItem[]>([]);
 
   const safeTasks = Array.isArray(tasks) ? tasks : [];
   const baseTasksForStats = allGroupTasks && allGroupTasks.length > 0 ? allGroupTasks : safeTasks;
@@ -137,10 +144,50 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
     }
 
     if (onSubmitChecklist) {
+      const timeNow = new Date().toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+      });
+      setLastSubmittedTime(timeNow);
+      setSubmittedTasksSnapshot([...safeTasks]);
       onSubmitChecklist(resolvedHeaderName);
       setJustSubmitted(true);
-      setTimeout(() => setJustSubmitted(false), 8000);
+      setTimeout(() => setJustSubmitted(false), 14000);
       window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const handleShareUpdate = async () => {
+    setIsGeneratingPdf(true);
+    setShareNotice('Generating PDF and preparing WhatsApp share update...');
+    try {
+      const res = await shareChecklistUpdate({
+        checklistName: resolvedHeaderName,
+        staffName: responderName,
+        timeStr:
+          lastSubmittedTime ||
+          new Date().toLocaleTimeString('en-IN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true,
+          }),
+        department: currentDept,
+        tasks: submittedTasksSnapshot.length > 0 ? submittedTasksSnapshot : safeTasks,
+      });
+      if (res.success) {
+        setShareNotice(res.notice || '✓ Update shared successfully!');
+        setTimeout(() => setShareNotice(null), 6000);
+      } else if (res.notice) {
+        setShareNotice(res.notice);
+        setTimeout(() => setShareNotice(null), 4000);
+      }
+    } catch (err) {
+      console.error('Share update error:', err);
+      setShareNotice('Failed to share checklist update.');
+      setTimeout(() => setShareNotice(null), 4000);
+    } finally {
+      setIsGeneratingPdf(false);
     }
   };
 
@@ -178,23 +225,65 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
           </div>
         )}
 
-        {/* Submission Feedback Banner (Direct Final Save & Auto-reset confirmation) */}
+        {/* Post-Submission Success Banner with WhatsApp / Web Share Update Button */}
         {justSubmitted && (
-          <div className="mx-5 mt-4 p-3.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 rounded-lg text-emerald-900 dark:text-emerald-200 text-xs font-semibold flex items-center justify-between animate-in fade-in slide-in-from-top-2 duration-300 shadow-xs">
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 stroke-[2.5]" />
-              <span>
-                ✓ Checklist finalized & saved directly to Master Task Register! Auto-reset: Brand new empty form ready below for next entry.
-              </span>
+          <div className="mx-4 sm:mx-6 mt-4 p-4 bg-emerald-50 dark:bg-emerald-950/70 border-2 border-emerald-500 rounded-lg text-emerald-950 dark:text-emerald-100 text-xs shadow-md animate-in fade-in slide-in-from-top-2 duration-300">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-1.5 flex-1 min-w-0">
+                <div className="flex items-center gap-2 font-bold text-emerald-800 dark:text-emerald-200 text-sm">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 stroke-[2.5]" />
+                  <span>Checklist Finalized & Saved to Master Register!</span>
+                </div>
+                <p className="text-zinc-600 dark:text-zinc-300 text-xs">
+                  All answers recorded to Master Task Register. Form has auto-reset for the next shift entry.
+                </p>
+                {/* Formatted Message Preview */}
+                <div className="mt-1 font-mono text-[11px] bg-white dark:bg-black/50 border border-emerald-200 dark:border-emerald-800/60 p-2 rounded text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5">
+                  <span className="select-all">
+                    {`✅ ${resolvedHeaderName} completed by ${responderName} at ${lastSubmittedTime || new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}. Status: Submitted.`}
+                  </span>
+                </div>
+                {shareNotice && (
+                  <p className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 animate-in fade-in">
+                    {shareNotice}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                <button
+                  type="button"
+                  id="post-submit-share-update-btn"
+                  onClick={handleShareUpdate}
+                  disabled={isGeneratingPdf}
+                  className={`px-4 py-2 bg-[#25D366] hover:bg-[#20ba5a] text-white text-xs font-bold rounded-md shadow flex items-center gap-2 transition active:scale-95 cursor-pointer ${
+                    isGeneratingPdf ? 'opacity-80 cursor-wait' : ''
+                  }`}
+                  title="Share update with exact submitted PDF to WhatsApp"
+                >
+                  {isGeneratingPdf ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                      <span>Generating PDF...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Share2 className="w-4 h-4 stroke-[2.5]" />
+                      <span>Share Update</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setJustSubmitted(false)}
+                  className="p-1.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-white rounded cursor-pointer"
+                  aria-label="Dismiss banner"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setJustSubmitted(false)}
-              className="text-emerald-700 hover:text-emerald-900 dark:hover:text-white cursor-pointer p-1"
-              aria-label="Dismiss banner"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
           </div>
         )}
 

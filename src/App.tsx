@@ -124,6 +124,9 @@ import {
 } from './lib/firebase';
 import { useTaskQueue } from './hooks/useTaskQueue';
 import { executeTaskOperationWithQueue } from './lib/taskQueue';
+import { shareChecklistUpdate } from './utils/shareUtils';
+import { useOfflineAutoSync, enqueueOfflineSubmission, isDeviceOnline } from './utils/offlineSync';
+import { OfflineSyncBanner } from './components/OfflineSyncBanner';
 
 const STORAGE_KEY_STATION = 'amarii_active_station_v2';
 const STORAGE_KEY_ACTIVE_STAFF = 'amarii_active_staff_id_v2';
@@ -171,6 +174,23 @@ export default function App() {
     isSyncing: isQueueSyncing,
     triggerSync: triggerQueueSync,
   } = useTaskQueue();
+
+  const {
+    isOnline: isNetworkOnline,
+    pendingCount: pendingChecklistSyncCount,
+    isSyncing: isChecklistSyncing,
+    triggerSync: triggerChecklistSync,
+  } = useOfflineAutoSync(
+    batchSaveTasksToFirebase,
+    saveShiftToFirebase,
+    (syncedCount) => {
+      setToastFeedback({
+        id: `toast-sync-${Date.now()}`,
+        text: `✓ Cloud Auto-Sync: ${syncedCount} offline checklist submission(s) synced to server!`,
+        type: 'success',
+      });
+    }
+  );
 
   const handleTriggerManualQueueSync = async () => {
     try {
@@ -1958,17 +1978,46 @@ export default function App() {
       outlet: activeOutlet,
     };
 
-    // 6. Direct Final Save into Firebase Firestore & Master Task Register
-    try {
-      await batchSaveTasksToFirebase([...finalizedTasks, ...freshBlankTasks]);
-      await saveShiftToFirebase(shiftRecord);
+    setHistory((prev) => [shiftRecord, ...prev]);
+
+    // 6. Direct Final Save into Firebase Firestore & Master Task Register (with robust offline queueing)
+    if (!isDeviceOnline()) {
+      enqueueOfflineSubmission({
+        headerName,
+        submitterName,
+        finalizedTasks,
+        freshBlankTasks,
+        shiftRecord,
+      });
       setToastFeedback({
         id: `toast-sub-chk-${Date.now()}`,
-        text: `✓ Checklist "${headerName}" finalized & saved to Master Task Register! Fresh empty form ready below.`,
-        type: 'success',
+        text: `Offline Mode: Checklist "${headerName}" recorded locally. It will auto-sync to Cloud once network reconnects!`,
+        type: 'info',
       });
-    } catch (e) {
-      console.error('Failed to finalize checklist:', e);
+    } else {
+      try {
+        await batchSaveTasksToFirebase([...finalizedTasks, ...freshBlankTasks]);
+        await saveShiftToFirebase(shiftRecord);
+        setToastFeedback({
+          id: `toast-sub-chk-${Date.now()}`,
+          text: `✓ Checklist "${headerName}" finalized & saved to Master Task Register! Fresh empty form ready below.`,
+          type: 'success',
+        });
+      } catch (e) {
+        console.warn('Network error saving checklist, queueing for auto-sync:', e);
+        enqueueOfflineSubmission({
+          headerName,
+          submitterName,
+          finalizedTasks,
+          freshBlankTasks,
+          shiftRecord,
+        });
+        setToastFeedback({
+          id: `toast-sub-chk-${Date.now()}`,
+          text: `Offline Saved: Checklist "${headerName}" queued locally and will auto-sync to Cloud upon reconnect.`,
+          type: 'info',
+        });
+      }
     }
   };
 
@@ -2985,7 +3034,14 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-36 sm:pb-24">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-36 sm:pb-24 space-y-4">
+        {/* Network Resilience & Offline Sync Banner */}
+        <OfflineSyncBanner
+          pendingCount={pendingChecklistSyncCount}
+          isSyncing={isChecklistSyncing}
+          onManualSync={triggerChecklistSync}
+        />
+
         <PullToRefresh onRefresh={handlePullToRefresh}>
           {isAnalyticsOpen ? (
             <TaskAnalyticsDashboard
