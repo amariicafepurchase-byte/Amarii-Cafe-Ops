@@ -699,7 +699,7 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
 
               return (
                 <div
-                  key={task.id}
+                  key={`register-task-${task.id || 'no-id'}-${idx}`}
                   className={`p-4 sm:p-5 transition hover:bg-zinc-50 dark:hover:bg-zinc-900/60 ${
                     isBreached && !task.completed
                       ? 'bg-red-950/10 border-l-4 border-l-red-600'

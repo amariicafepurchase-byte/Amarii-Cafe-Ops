@@ -138,9 +138,9 @@ export const ScannableBriefView: React.FC<ScannableBriefViewProps> = ({
               </div>
 
               <ul className="space-y-1.5 pl-1">
-                {deptTasks.map((t) => (
+                {deptTasks.map((t, tIdx) => (
                   <li
-                    key={t.id}
+                    key={`brief-task-${t.id || 'no-id'}-${tIdx}`}
                     onClick={() => onToggleTask(t.id)}
                     className={`flex items-start gap-2.5 text-xs sm:text-sm cursor-pointer p-2.5 transition rounded-sm border ${
                       isLightMode

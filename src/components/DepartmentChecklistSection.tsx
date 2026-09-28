@@ -244,7 +244,7 @@ export const DepartmentChecklistSection: React.FC<DepartmentChecklistSectionProp
                   : 'text-zinc-500 bg-zinc-900/40 border-zinc-800'
               }`}
             >
-              No tasks in {department} checklist yet. Click "+ Add Task" to create one with photo, video & notes.
+              No tasks in {department} checklist yet. Waiting for shift checklists.
             </div>
           ) : (
             <AnimatePresence mode="popLayout" initial={false}>

@@ -72,12 +72,14 @@ import { PdfExportModal } from './components/PdfExportModal';
 import { OutletManagementModal } from './components/OutletManagementModal';
 import { DataCleanupModal } from './components/DataCleanupModal';
 import { TaskManagementModal } from './components/TaskManagementModal';
-import { AdminApprovalModal } from './components/AdminApprovalModal';
 import { FirestoreDiagnosticModal } from './components/FirestoreDiagnosticModal';
 import { TaskRegisterModal } from './components/TaskRegisterModal';
 import { TaskRegisterView } from './components/TaskRegisterView';
 import { PreTaskAlarmModal } from './components/PreTaskAlarmModal';
+import { UrgentDeadlineBanner } from './components/UrgentDeadlineBanner';
 import { PullToRefresh } from './components/PullToRefresh';
+import { ChecklistsSidebar, ParentChecklistInfo } from './components/ChecklistsSidebar';
+import { PREDEFINED_CHECKLIST_TEMPLATES, STATION_DEFAULT_HEADERS } from './data/checklistTemplates';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { useTheme } from './context/ThemeContext';
 import { useAuth } from './context/AuthContext';
@@ -90,6 +92,11 @@ import {
   requestNotificationPermission,
   stopExtremeLoudAlarm,
 } from './utils/preTaskAlarm';
+import {
+  checkUrgentDeadlineAlerts,
+  triggerTestUrgentDeadlineAlert,
+  UrgentAlertData,
+} from './utils/urgentDeadlineAlert';
 import {
   subscribeToTasks,
   subscribeToStaff,
@@ -121,46 +128,16 @@ import { executeTaskOperationWithQueue } from './lib/taskQueue';
 const STORAGE_KEY_STATION = 'amarii_active_station_v2';
 const STORAGE_KEY_ACTIVE_STAFF = 'amarii_active_staff_id_v2';
 
-// Helper to normalize any incoming tasks so that combined subtasks are always converted to separate individual tasks by default
-const normalizeTasksToSeparateCards = (rawTasks: TaskItem[]): TaskItem[] => {
+// Helper to normalize any incoming tasks without modifying their real Firestore document IDs
+const normalizeTasks = (rawTasks: TaskItem[]): TaskItem[] => {
   const result: TaskItem[] = [];
+  const seenIds = new Set<string>();
+
   rawTasks.forEach((t) => {
-    if (t.subTasks && t.subTasks.length > 0) {
-      t.subTasks.forEach((s, sIdx) => {
-        result.push({
-          id: s.id && !s.id.startsWith('sub-') ? s.id : `${t.id}-card-${sIdx + 1}`,
-          title: s.title,
-          checklistHeader: t.checklistHeader || 'General Operations',
-          startTime: t.startTime || '09:00 AM',
-          endTime: t.endTime || t.deadline || '10:30 AM',
-          deadline: t.deadline || t.endTime || '10:30 AM',
-          department: t.department || 'General',
-          priority: t.priority || 'today',
-          completed: s.isDone,
-          completedAt: s.completedAt,
-          isPhotoMandatory: Boolean(s.isPhotoMandatory || s.mandatoryMedia === 'photo'),
-          isVideoMandatory: Boolean(s.isVideoMandatory || s.mandatoryMedia === 'video'),
-          isNoteMandatory: Boolean(s.isNoteMandatory),
-          mandatoryMedia: s.isPhotoMandatory || s.mandatoryMedia === 'photo' ? 'photo' : s.isVideoMandatory || s.mandatoryMedia === 'video' ? 'video' : 'none',
-          media: s.media || [],
-          notes: s.notes || '',
-          outlet: t.outlet || DEFAULT_OUTLET,
-          assignee: t.assignee,
-          assigneeId: t.assigneeId,
-          assigneeDesignation: t.assigneeDesignation,
-          assigneeRoleType: t.assigneeRoleType,
-          createdAt: t.createdAt,
-          assignedAt: t.assignedAt,
-          assignedBy: t.assignedBy,
-          approvalStatus: t.approvalStatus,
-          submittedBy: t.submittedBy,
-          submittedAt: t.submittedAt,
-          subTasks: [],
-        });
-      });
-    } else {
-      result.push(t);
-    }
+    if (!t || !t.id) return;
+    if (seenIds.has(t.id)) return; // Strictly deduplicate without renaming the ID
+    seenIds.add(t.id);
+    result.push(t);
   });
   return result;
 };
@@ -183,6 +160,9 @@ export default function App() {
     isManager,
     staffStation,
   } = useAuth();
+
+  // STRICT REQUIREMENT: Only Admin (Hemen Das) can add/create/modify checklists. Regular staff must NEVER see checklist creation options!
+  const isHemenAdmin = Boolean(isAdmin && !isStaff);
 
   const {
     queue: offlineQueue,
@@ -365,7 +345,6 @@ export default function App() {
   const [isStaffModalOpen, setIsStaffModalOpen] = useState<boolean>(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState<boolean>(false);
   const [isTaskDirectoryOpen, setIsTaskDirectoryOpen] = useState<boolean>(false);
-  const [isAdminApprovalOpen, setIsAdminApprovalOpen] = useState<boolean>(false);
   const [isTaskRegisterOpen, setIsTaskRegisterOpen] = useState<boolean>(false);
   const [taskViewMode, setTaskViewMode] = useState<'live' | 'register'>('live');
 
@@ -384,10 +363,11 @@ export default function App() {
   // UI state
   const [isScannableMode, setIsScannableMode] = useState<boolean>(false);
   const [groupBy, setGroupBy] = useState<'checklistHeader' | 'department' | 'priority'>('checklistHeader');
+  const [selectedParentChecklist, setSelectedParentChecklist] = useState<string>('Kitchen Opening Checklist');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedDept, setSelectedDept] = useState<string>('all');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'remaining' | 'completed' | 'awaiting_approval'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'remaining' | 'completed'>('all');
   const [copied, setCopied] = useState<boolean>(false);
   const [activeMobileTab, setActiveMobileTab] = useState<'tasks' | 'station' | 'staff' | 'chat' | 'brief'>('tasks');
 
@@ -433,10 +413,10 @@ export default function App() {
     }
     // Sensible default station checklist group based on department or active station
     const dept = (task.department || '').toLowerCase();
-    if (dept.includes('kitchen') || currentStation === 'Kitchen') return 'Kitchen Daily Checklist';
+    if (dept.includes('kitchen') || currentStation === 'Kitchen') return 'Kitchen Opening Checklist';
     if (dept.includes('bar') || dept.includes('beverage') || currentStation === 'Bar') return 'Bar Opening Checklist';
     if (dept.includes('cashier') || dept.includes('billing') || currentStation === 'Billing') return 'Cashier Opening/Closing';
-    if (dept.includes('service') || dept.includes('foh') || currentStation === 'Service') return 'Service Opening/Closing';
+    if (dept.includes('service') || dept.includes('foh') || currentStation === 'Service') return 'Service Opening Checklist';
     if (dept.includes('housekeeping') || currentStation === 'Housekeeping') return 'Housekeeping Opening/Closing';
     return 'General Operations';
   }, [currentStation]);
@@ -475,6 +455,10 @@ export default function App() {
     minutesRemaining: 10,
   });
 
+  // Desktop-Style 30-Minute Urgent Task Deadline Alerts State
+  const [urgentAlerts, setUrgentAlerts] = useState<UrgentAlertData[]>([]);
+  const [dismissedUrgentAlertIds, setDismissedUrgentAlertIds] = useState<Set<string>>(new Set());
+
   // Automatically request notification permissions on user activity & mount
   useEffect(() => {
     if (typeof window !== 'undefined' && 'Notification' in window) {
@@ -489,7 +473,32 @@ export default function App() {
     if (!tasks || tasks.length === 0) return;
 
     const runAlarmCheck = () => {
-      checkPreTaskAlarms(tasks, (task, minutesRemaining) => {
+      // STRICT REQUIREMENT: Only the phone of the specific staff member whose task is starting in 10 mins must ring!
+      const myAssignedTasks = tasks.filter((task) => {
+        if (!task || task.completed) return false;
+
+        const taskAssigneeId = task.assigneeId;
+        const taskAssigneeName = (task.assignee || '').trim().toLowerCase();
+
+        // 1. If task is not assigned to a specific person, DO NOT ring anyone's phone!
+        // "Notification sound har ek ka nhi bajna chahiye jiska task ka 10 min me start hoga bs uska mobile bajna chahiye na ki jitno ke mobile me app install hai unke"
+        if (!taskAssigneeId && !taskAssigneeName) {
+          return false;
+        }
+
+        // 2. Only ring if this task is assigned specifically to the logged-in user
+        const isMyId = Boolean(
+          (activeStaff && taskAssigneeId && activeStaff.id === taskAssigneeId) ||
+          (currentUser && taskAssigneeId && currentUser.id === taskAssigneeId)
+        );
+        const isMyName = Boolean(
+          (activeStaff && taskAssigneeName && activeStaff.name.toLowerCase() === taskAssigneeName) ||
+          (currentUser && taskAssigneeName && currentUser.name.toLowerCase() === taskAssigneeName)
+        );
+        return isMyId || isMyName;
+      });
+
+      checkPreTaskAlarms(myAssignedTasks, (task, minutesRemaining) => {
         setActiveAlarm({
           isOpen: true,
           task,
@@ -504,7 +513,44 @@ export default function App() {
     // Check periodically
     const interval = setInterval(runAlarmCheck, 15000);
     return () => clearInterval(interval);
-  }, [tasks]);
+  }, [tasks, activeStaff, currentUser, currentStation, isAdmin, isManager]);
+
+  // Periodic 30-minute Urgent incomplete task evaluation & desktop-style notification alert (runs every 15 seconds)
+  useEffect(() => {
+    if (!tasks || tasks.length === 0) {
+      setUrgentAlerts([]);
+      return;
+    }
+
+    const runUrgentAlertCheck = () => {
+      // Urgent alerts notify managers & admins, or the relevant station staff/assignees
+      const relevantTasks = (isAdmin || isManager)
+        ? tasks
+        : tasks.filter((t) => {
+            if (!t) return false;
+            // Assigned directly to user
+            const isAssigned =
+              Boolean(activeStaff && t.assigneeId && activeStaff.id === t.assigneeId) ||
+              Boolean(activeStaff && t.assignee && activeStaff.name.toLowerCase() === t.assignee.toLowerCase()) ||
+              Boolean(currentUser && t.assigneeId && currentUser.id === t.assigneeId) ||
+              Boolean(currentUser && t.assignee && currentUser.name.toLowerCase() === t.assignee.toLowerCase());
+            // Or belongs to current station/department
+            const isCurrentStation =
+              !currentStation || currentStation === 'All' || t.department === currentStation;
+            return isAssigned || isCurrentStation;
+          });
+
+      checkUrgentDeadlineAlerts(relevantTasks, (alerts) => {
+        // Filter out user-dismissed tasks for this active session
+        const unDismissed = alerts.filter((a) => !dismissedUrgentAlertIds.has(a.task.id));
+        setUrgentAlerts(unDismissed);
+      });
+    };
+
+    runUrgentAlertCheck();
+    const interval = setInterval(runUrgentAlertCheck, 15000);
+    return () => clearInterval(interval);
+  }, [tasks, activeStaff, currentUser, currentStation, isAdmin, isManager, dismissedUrgentAlertIds]);
 
   // Auto-dismiss toast feedback after 4 seconds
   useEffect(() => {
@@ -584,7 +630,7 @@ export default function App() {
           `[App] Real-time tasks listener updated: ${liveTasks.length} tasks (fromCache: ${Boolean(fromCache)})`
         );
         if (liveTasks && liveTasks.length > 0) {
-          const normalized = normalizeTasksToSeparateCards(liveTasks);
+          const normalized = normalizeTasks(liveTasks);
           setTasks(normalized);
         }
         setSyncedTasksCount(liveTasks ? liveTasks.length : 0);
@@ -1091,7 +1137,7 @@ export default function App() {
         fetchStaffOnce(),
       ]);
       if (freshTasks && freshTasks.length > 0) {
-        setTasks(normalizeTasksToSeparateCards(freshTasks));
+        setTasks(normalizeTasks(freshTasks));
       }
       if (freshStaff && freshStaff.length > 0) {
         setStaffList(freshStaff);
@@ -1443,12 +1489,22 @@ export default function App() {
     const target = tasks.find((t) => t.id === taskId);
     if (!target) return;
 
+    let processedMedia = { ...newMedia };
+    if (processedMedia.type === 'photo' && processedMedia.url && processedMedia.url.startsWith('data:image/')) {
+      try {
+        const compressedUrl = await compressImage(processedMedia.url, 800, 0.65);
+        processedMedia.url = compressedUrl;
+      } catch (e) {
+        console.warn('Subtask media compression error:', e);
+      }
+    }
+
     const existingSubTasks = target.subTasks || [];
     const updatedSubTasks = existingSubTasks.map((st) => {
       if (st.id === subTaskId) {
         return {
           ...st,
-          media: [...(st.media || []), newMedia],
+          media: [...(st.media || []), processedMedia],
         };
       }
       return st;
@@ -1456,7 +1512,6 @@ export default function App() {
 
     const updatedTask: TaskItem = {
       ...target,
-      media: [...(target.media || []), newMedia],
       subTasks: updatedSubTasks,
     };
 
@@ -1467,12 +1522,6 @@ export default function App() {
         type: 'UPDATE_SUBTASKS',
         taskId,
         subTasks: updatedSubTasks,
-        fullTask: updatedTask,
-      });
-      await executeTaskOperationWithQueue({
-        type: 'UPDATE_MEDIA',
-        taskId,
-        media: updatedTask.media || [],
         fullTask: updatedTask,
       });
     } catch (err) {
@@ -1656,10 +1705,10 @@ export default function App() {
       completed: newCompleted,
       completedAt: newCompleted ? new Date().toISOString() : undefined,
       subTasks: updatedSubTasks,
-      approvalStatus: newCompleted ? 'pending' : 'none',
+      approvalStatus: undefined,
       submittedBy: newCompleted ? activeStaff?.name || currentUser?.name || 'Staff' : undefined,
       submittedAt: newCompleted ? new Date().toISOString() : undefined,
-      rejectionReason: newCompleted ? undefined : target.rejectionReason,
+      rejectionReason: undefined,
     };
 
     setTasks((prev) =>
@@ -1686,24 +1735,40 @@ export default function App() {
     }
   };
 
-  // Admin Hemen Das Task Approval Handler
+  // Admin Hemen Das Task Approval Handler (Unconditionally approves with or without photos)
   const handleApproveTask = async (taskId: string) => {
     const target = tasks.find((t) => t.id === taskId);
     if (!target) return;
 
+    const nowIso = new Date().toISOString();
     const updatedTask: TaskItem = {
       ...target,
       completed: true,
       approvalStatus: 'approved',
       approvedBy: 'Hemen Das',
-      approvedAt: new Date().toISOString(),
+      approvedAt: nowIso,
       rejectionReason: undefined,
     };
 
     setTasks((prev) => prev.map((t) => (t.id === taskId ? updatedTask : t)));
 
+    // Record shift audit log in Firestore for Master Register
+    const shiftRecord: ShiftRecord = {
+      id: `shift-appr-${Date.now()}-${taskId}`,
+      timestamp: nowIso,
+      department: target.department || 'General',
+      staffName: target.submittedBy || target.assignee || 'Staff',
+      completedTasks: 1,
+      totalTasks: 1,
+      completionRate: 100,
+      tasks: [updatedTask],
+      outlet: target.outlet || DEFAULT_OUTLET,
+    };
+
     try {
       await saveTaskToFirebase(updatedTask);
+      await saveShiftToFirebase(shiftRecord);
+      triggerHaptic('success');
       setToastFeedback({
         id: `toast-approved-${Date.now()}`,
         text: `✓ Task "${target.title}" officially APPROVED by Admin Hemen Das!`,
@@ -1719,12 +1784,13 @@ export default function App() {
     const target = tasks.find((t) => t.id === taskId);
     if (!target) return;
 
+    const nowIso = new Date().toISOString();
     const updatedTask: TaskItem = {
       ...target,
       completed: false,
       approvalStatus: 'rejected',
       rejectedBy: 'Hemen Das',
-      rejectedAt: new Date().toISOString(),
+      rejectedAt: nowIso,
       rejectionReason: reason,
     };
 
@@ -1732,6 +1798,7 @@ export default function App() {
 
     try {
       await saveTaskToFirebase(updatedTask);
+      triggerHaptic('error');
       setToastFeedback({
         id: `toast-rejected-${Date.now()}`,
         text: `❌ Task "${target.title}" rejected. Notification sent to staff to re-capture clear photo.`,
@@ -1748,15 +1815,18 @@ export default function App() {
       (t) =>
         t.approvalStatus === 'pending' ||
         (t.completed && t.approvalStatus !== 'approved') ||
-        (t.media && t.media.length > 0 && !t.completed && t.approvalStatus !== 'approved')
+        (t.priority === 'pending' && !t.completed) ||
+        (t.media && t.media.length > 0 && t.approvalStatus !== 'approved')
     );
     if (pendingList.length === 0) return;
 
     const pendingIds = new Set(pendingList.map((t) => t.id));
     const nowIso = new Date().toISOString();
+    const approvedTasksList: TaskItem[] = [];
+
     const updatedTasks = tasks.map((t) => {
       if (pendingIds.has(t.id)) {
-        return {
+        const appr: TaskItem = {
           ...t,
           completed: true,
           approvalStatus: 'approved' as const,
@@ -1764,17 +1834,31 @@ export default function App() {
           approvedAt: nowIso,
           rejectionReason: undefined,
         };
+        approvedTasksList.push(appr);
+        return appr;
       }
       return t;
     });
 
     setTasks(updatedTasks);
 
+    // Save shift record for register
+    const shiftRecord: ShiftRecord = {
+      id: `shift-bulk-appr-${Date.now()}`,
+      timestamp: nowIso,
+      department: currentStation !== 'Manager' ? currentStation : 'Management',
+      staffName: 'Hemen Das',
+      completedTasks: approvedTasksList.length,
+      totalTasks: approvedTasksList.length,
+      completionRate: 100,
+      tasks: approvedTasksList,
+      outlet: activeOutlet,
+    };
+
     try {
-      await executeTaskOperationWithQueue({
-        type: 'BATCH_SAVE_TASKS',
-        tasks: updatedTasks,
-      });
+      await batchSaveTasksToFirebase(approvedTasksList);
+      await saveShiftToFirebase(shiftRecord);
+      triggerHaptic('success');
       setToastFeedback({
         id: `toast-approved-all-${Date.now()}`,
         text: `✓ All ${pendingList.length} submitted tasks officially APPROVED by Admin Hemen Das!`,
@@ -1782,6 +1866,166 @@ export default function App() {
       });
     } catch (e) {
       console.error('Failed to batch approve tasks:', e);
+    }
+  };
+
+  // Staff Submit Entire Checklist: Direct Final Save & Instant Auto-Reset
+  // Completely removes manual Admin verification. Instantly finalizes the form,
+  // saves all Yes/No answers, proofs, notes into Master Task Register / Firebase,
+  // and auto-generates a brand new, empty Google Form-style checklist for the next entry.
+  const handleSubmitChecklist = async (headerName: string) => {
+    // 1. Gather current active tasks in this checklist header
+    const currentHeaderTasks = tasks.filter((t) => {
+      const group = getTaskChecklistGroup(t);
+      const matches = group === headerName || t.checklistHeader === headerName;
+      return matches && !t.id?.startsWith('finalized-') && !t.id?.startsWith('submitted-');
+    });
+
+    const sourceTasks = currentHeaderTasks.length > 0
+      ? currentHeaderTasks
+      : tasks.filter((t) => {
+          const group = getTaskChecklistGroup(t);
+          return group === headerName || t.checklistHeader === headerName;
+        });
+
+    if (sourceTasks.length === 0) return;
+
+    const nowIso = new Date().toISOString();
+    const timestampKey = Date.now();
+    const submitterName = activeStaff?.name || currentUser?.name || 'Staff';
+
+    // 2. Direct Final Save: finalize all answers as completed permanent record
+    const finalizedTasks: TaskItem[] = sourceTasks.map((t, idx) => ({
+      ...t,
+      id: `finalized-shift-${timestampKey}-${idx}-${t.id}`,
+      completed: Boolean(t.completed),
+      approvalStatus: 'approved' as const,
+      completedAt: nowIso,
+      approvedBy: submitterName,
+      approvedAt: nowIso,
+      submittedBy: submitterName,
+      submittedAt: nowIso,
+      checklistHeader: headerName,
+    }));
+
+    // 3. Instant Auto-Reset: generate a brand new, completely empty Google Form-style checklist
+    const freshBlankTasks: TaskItem[] = sourceTasks.map((t, idx) => ({
+      ...t,
+      id: t.id,
+      checklistHeader: headerName,
+      completed: false, // clean blank response (No / uncompleted)
+      approvalStatus: undefined, // fresh, uncompleted
+      submittedBy: undefined,
+      submittedAt: undefined,
+      approvedBy: undefined,
+      approvedAt: undefined,
+      completedAt: undefined,
+      rejectionReason: undefined,
+      media: [], // blank proofs
+      notes: '', // blank notes
+      notesHistory: [],
+      subTasks: Array.isArray(t.subTasks)
+        ? t.subTasks.map((st, stIdx) => ({
+            ...st,
+            id: `subtask-${timestampKey + 1}-${idx}-${stIdx}`,
+            completed: false,
+            media: [],
+            notes: '',
+          }))
+        : [],
+    }));
+
+    // 4. Update tasks in state: preserve other station tasks + finalized permanent record + fresh blank tasks
+    const sourceTaskIds = new Set(sourceTasks.map((t) => t.id));
+    const otherTasks = tasks.filter((t) => !sourceTaskIds.has(t.id));
+    const updatedTasks = [...otherTasks, ...finalizedTasks, ...freshBlankTasks];
+
+    setTasks(updatedTasks);
+    // Ensure active view is immediately 'all' so brand new empty form is seamless without any blocking screens
+    setFilterStatus('all');
+    triggerHaptic('success');
+
+    // 5. Build permanent Shift Record for Master Task Register
+    const shiftRecord: ShiftRecord = {
+      id: `shift-${timestampKey}`,
+      timestamp: nowIso,
+      department: sourceTasks[0]?.department || (currentStation !== 'Manager' ? currentStation : 'Management'),
+      staffName: submitterName,
+      completedTasks: sourceTasks.filter((t) => t.completed).length,
+      totalTasks: sourceTasks.length,
+      completionRate: sourceTasks.length > 0 ? Math.round((sourceTasks.filter((t) => t.completed).length / sourceTasks.length) * 100) : 100,
+      tasks: finalizedTasks,
+      outlet: activeOutlet,
+    };
+
+    // 6. Direct Final Save into Firebase Firestore & Master Task Register
+    try {
+      await batchSaveTasksToFirebase([...finalizedTasks, ...freshBlankTasks]);
+      await saveShiftToFirebase(shiftRecord);
+      setToastFeedback({
+        id: `toast-sub-chk-${Date.now()}`,
+        text: `✓ Checklist "${headerName}" finalized & saved to Master Task Register! Fresh empty form ready below.`,
+        type: 'success',
+      });
+    } catch (e) {
+      console.error('Failed to finalize checklist:', e);
+    }
+  };
+
+  // Admin Hemen Das Approve Entire Checklist
+  const handleApproveChecklist = async (headerName: string) => {
+    const checklistTasks = tasks.filter((t) => {
+      const group = getTaskChecklistGroup(t);
+      return (group === headerName || t.checklistHeader === headerName) && t.approvalStatus === 'pending';
+    });
+
+    if (checklistTasks.length === 0) return;
+
+    const nowIso = new Date().toISOString();
+    const approvedTasksList: TaskItem[] = [];
+
+    const updatedTasks = tasks.map((t) => {
+      const group = getTaskChecklistGroup(t);
+      if ((group === headerName || t.checklistHeader === headerName) && t.approvalStatus === 'pending') {
+        const approved: TaskItem = {
+          ...t,
+          completed: true,
+          approvalStatus: 'approved' as const,
+          approvedBy: 'Hemen Das',
+          approvedAt: nowIso,
+          rejectionReason: undefined,
+        };
+        approvedTasksList.push(approved);
+        return approved;
+      }
+      return t;
+    });
+
+    setTasks(updatedTasks);
+
+    const shiftRecord: ShiftRecord = {
+      id: `shift-chk-appr-${Date.now()}`,
+      timestamp: nowIso,
+      department: checklistTasks[0]?.department || (currentStation !== 'Manager' ? currentStation : 'Management'),
+      staffName: checklistTasks[0]?.submittedBy || 'Staff',
+      completedTasks: approvedTasksList.length,
+      totalTasks: approvedTasksList.length,
+      completionRate: 100,
+      tasks: approvedTasksList,
+      outlet: activeOutlet,
+    };
+
+    try {
+      await batchSaveTasksToFirebase(approvedTasksList);
+      await saveShiftToFirebase(shiftRecord);
+      triggerHaptic('success');
+      setToastFeedback({
+        id: `toast-chk-appr-${Date.now()}`,
+        text: `✓ Checklist "${headerName}" officially APPROVED by Admin Hemen Das & saved in register!`,
+        type: 'success',
+      });
+    } catch (e) {
+      console.error('Failed to approve checklist:', e);
     }
   };
 
@@ -2107,6 +2351,59 @@ export default function App() {
     });
   };
 
+  // Jump to specific task from Desktop Urgent Deadline Alert Banner
+  const handleJumpToUrgentTask = (taskId: string) => {
+    const target = tasks.find((t) => t.id === taskId);
+    if (target) {
+      if (target.department && currentStation !== 'Manager' && !isStaff) {
+        setCurrentStation(target.department as StationMode);
+      }
+      setFilterStatus('all');
+      setActiveMobileTab('tasks');
+
+      setTimeout(() => {
+        const el = document.getElementById(`task-item-${taskId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('ring-4', 'ring-red-500', 'animate-pulse');
+          setTimeout(() => {
+            el.classList.remove('ring-4', 'ring-red-500', 'animate-pulse');
+          }, 3500);
+        }
+      }, 300);
+    }
+  };
+
+  // Manually trigger 30-minute Urgent Deadline Alert Test
+  const handleTriggerTestUrgentAlert = () => {
+    const urgentSample = tasks.find((t) => t.priority === 'urgent' && !t.completed) || {
+      title: 'Kitchen Line Check & Temperature Audit',
+      department: currentStation !== 'Manager' ? currentStation : 'Kitchen',
+      checklistHeader: 'Kitchen Opening Checklist',
+      priority: 'urgent' as const,
+      completed: false,
+      deadline: '11:00 AM',
+      endTime: '11:00 AM',
+      startTime: '10:00 AM',
+      assignee: activeStaff?.name || currentUser?.name || 'Hemen Das',
+    };
+
+    triggerTestUrgentDeadlineAlert(urgentSample, (alerts) => {
+      setDismissedUrgentAlertIds((prev) => {
+        const next = new Set(prev);
+        alerts.forEach((a) => next.delete(a.task.id));
+        return next;
+      });
+      setUrgentAlerts(alerts);
+    });
+
+    setToastFeedback({
+      id: `toast-urgent-test-${Date.now()}`,
+      text: '🚨 30-Min Urgent Task Alert triggered! Desktop notification & alert banner active.',
+      type: 'success',
+    });
+  };
+
   // Task Counts by Department for the Station Selector Modal (Filtered by activeOutlet)
   const taskCountsByDept = useMemo(() => {
     const safeTasks = Array.isArray(tasks)
@@ -2149,22 +2446,18 @@ export default function App() {
     });
   }, [outletTasks, currentStation]);
 
-  // Tasks awaiting Admin Hemen Das photo proof quality check & approval
-  const pendingApprovalTasks = useMemo(() => {
-    const safeStationTasks = Array.isArray(stationTasks) ? stationTasks : [];
-    return safeStationTasks.filter(
-      (t) =>
-        t.approvalStatus === 'pending' ||
-        (t.completed && t.approvalStatus !== 'approved') ||
-        (t.priority === 'pending' && !t.completed) ||
-        (t.media && t.media.length > 0 && !t.completed && t.approvalStatus !== 'approved')
-    );
-  }, [stationTasks]);
+  // Helper to test if a checklist is completely approved and archived to Master Register
+  const isChecklistFullyApproved = useCallback((header: string, taskList: TaskItem[]) => {
+    const headerTasks = taskList.filter((t) => {
+      const g = getTaskChecklistGroup(t);
+      return g === header || t.checklistHeader === header;
+    });
+    if (headerTasks.length === 0) return true;
+    return headerTasks.every((t) => t.approvalStatus === 'approved');
+  }, [getTaskChecklistGroup]);
 
-  const pendingApprovalCount = pendingApprovalTasks.length;
-
-  // Secondary search and status filtering on the station-filtered tasks
-  const filteredTasks = useMemo(() => {
+  // Base station tasks filtered by search and manager department, but NOT by status filter
+  const stationSearchFilteredTasks = useMemo(() => {
     const safeStationTasks = Array.isArray(stationTasks) ? stationTasks : [];
     return safeStationTasks.filter((task) => {
       if (!task) return false;
@@ -2186,21 +2479,151 @@ export default function App() {
         }
       }
 
+      return true;
+    });
+  }, [stationTasks, searchQuery, currentStation, selectedDept]);
+
+  // Dedicated Parent Checklists List for the Checklists Navigation system
+  const parentChecklistsList = useMemo<ParentChecklistInfo[]>(() => {
+    const headersSet = new Set<string>();
+    const safeStation = Array.isArray(stationTasks) ? stationTasks : [];
+
+    // 1. Gather all headers from active tasks in station
+    safeStation.forEach((t) => {
+      const hdr = getTaskChecklistGroup(t);
+      if (hdr && hdr.trim()) headersSet.add(hdr.trim());
+    });
+
+    // 2. Standard station default headers
+    const defaultHeaders = STATION_DEFAULT_HEADERS[currentStation] || [];
+    defaultHeaders.forEach((h) => {
+      if (!deletedChecklistHeaders.includes(h)) {
+        headersSet.add(h);
+      }
+    });
+
+    // Filter out deleted headers
+    const validHeaders = Array.from(headersSet).filter((h) => !deletedChecklistHeaders.includes(h));
+
+    return validHeaders.map((headerName) => {
+      const headerTasks = safeStation.filter((t) => {
+        if (t.id?.startsWith('finalized-') || t.id?.startsWith('submitted-')) return false;
+        const group = getTaskChecklistGroup(t);
+        return group === headerName || t.checklistHeader === headerName;
+      });
+
+      const templateDefs = PREDEFINED_CHECKLIST_TEMPLATES[headerName];
+      const templateCount = templateDefs ? templateDefs.length : 0;
+      const totalTasks = headerTasks.length > 0 ? headerTasks.length : templateCount;
+      const completedTasks = headerTasks.filter((t) => t.completed).length;
+      const percentage = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+      const department = headerTasks[0]?.department || (currentStation !== 'Manager' ? currentStation : undefined);
+
+      return {
+        headerName,
+        totalTasks,
+        completedTasks,
+        percentage,
+        department,
+        isCustom: !PREDEFINED_CHECKLIST_TEMPLATES[headerName],
+      };
+    });
+  }, [stationTasks, currentStation, deletedChecklistHeaders, getTaskChecklistGroup]);
+
+  // Automatically ensure questions exist for a selected Parent Checklist
+  const handleEnsureChecklistTasks = useCallback(
+    (headerName: string) => {
+      if (headerName === 'all') return;
+      const exists = tasks.some(
+        (t) =>
+          !t.id?.startsWith('finalized-') &&
+          !t.id?.startsWith('submitted-') &&
+          (getTaskChecklistGroup(t) === headerName || t.checklistHeader === headerName)
+      );
+      if (!exists && PREDEFINED_CHECKLIST_TEMPLATES[headerName]) {
+        const templateDefs = PREDEFINED_CHECKLIST_TEMPLATES[headerName];
+        const timestamp = Date.now();
+        const created: TaskItem[] = templateDefs.map((def, idx) => ({
+          id: `task-${headerName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${timestamp}-${idx}`,
+          title: def.title,
+          details: def.details || '',
+          department:
+            def.department ||
+            (currentStation !== 'Manager' ? (currentStation as TaskDepartment) : 'Kitchen & Food Prep'),
+          checklistHeader: headerName,
+          priority: 'today' as const,
+          completed: false,
+          isPhotoMandatory: Boolean(def.isPhotoMandatory),
+          isVideoMandatory: Boolean(def.isVideoMandatory),
+          isNoteMandatory: Boolean(def.isNoteMandatory),
+          mandatoryMedia: def.isPhotoMandatory ? 'photo' : def.isVideoMandatory ? 'video' : 'none',
+          media: [],
+          notes: '',
+          notesHistory: [],
+          subTasks: [],
+          outlet: activeOutlet,
+        }));
+        setTasks((prev) => [...prev, ...created]);
+        batchSaveTasksToFirebase(created).catch((err) =>
+          console.warn('Failed to save seeded checklist tasks to Firebase:', err)
+        );
+      }
+    },
+    [tasks, currentStation, activeOutlet, getTaskChecklistGroup]
+  );
+
+  // Ensure active selected checklist matches the current station's available parent checklists
+  useEffect(() => {
+    if (parentChecklistsList.length > 0) {
+      if (selectedParentChecklist !== 'all') {
+        const isFound = parentChecklistsList.some((c) => c.headerName === selectedParentChecklist);
+        if (!isFound) {
+          const nextHeader = parentChecklistsList[0].headerName;
+          setSelectedParentChecklist(nextHeader);
+          handleEnsureChecklistTasks(nextHeader);
+        } else {
+          handleEnsureChecklistTasks(selectedParentChecklist);
+        }
+      }
+    }
+  }, [currentStation, parentChecklistsList, selectedParentChecklist, handleEnsureChecklistTasks]);
+
+  // STABLE TAB COUNTS: Always accurate, consistent, and scoped to selected Parent Checklist
+  const tabCounts = useMemo(() => {
+    // Only count active checklist tasks, excluding finalized permanent records from live shift counters
+    const activeTasksOnly = stationSearchFilteredTasks.filter((t) => !t.id?.startsWith('finalized-') && !t.id?.startsWith('submitted-'));
+    const scopedTasks =
+      selectedParentChecklist === 'all'
+        ? activeTasksOnly
+        : activeTasksOnly.filter(
+            (t) =>
+              getTaskChecklistGroup(t) === selectedParentChecklist ||
+              t.checklistHeader === selectedParentChecklist
+          );
+    const total = scopedTasks.length;
+    const done = scopedTasks.filter((t) => t.completed).length;
+    const remaining = scopedTasks.filter((t) => !t.completed).length;
+    return {
+      all: total,
+      remaining,
+      done,
+    };
+  }, [stationSearchFilteredTasks, selectedParentChecklist, getTaskChecklistGroup]);
+
+  // Secondary search and status filtering on the station-filtered tasks
+  const filteredTasks = useMemo(() => {
+    return stationSearchFilteredTasks.filter((task) => {
       // Status filter
-      if (filterStatus === 'remaining' && task.completed) return false;
-      if (filterStatus === 'completed' && !task.completed) return false;
-      if (filterStatus === 'awaiting_approval') {
-        const isAwaiting =
-          task.approvalStatus === 'pending' ||
-          (task.completed && task.approvalStatus !== 'approved') ||
-          (task.priority === 'pending' && !task.completed) ||
-          (task.media && task.media.length > 0 && task.approvalStatus !== 'approved');
-        if (!isAwaiting) return false;
+      if (filterStatus === 'remaining') {
+        if (task.completed) return false;
+      }
+      if (filterStatus === 'completed') {
+        if (!task.completed) return false;
       }
 
       return true;
     });
-  }, [stationTasks, searchQuery, selectedDept, filterStatus, currentStation]);
+  }, [stationSearchFilteredTasks, filterStatus]);
 
   // Active departments to render
   const activeDepartmentsToRender = useMemo(() => {
@@ -2232,44 +2655,89 @@ export default function App() {
       : (['Cashier & Front of House (FOH)', 'Barista & Beverage Station', 'Kitchen & Food Prep', 'Closing & Maintenance'] as TaskDepartment[]);
   }, [currentStation, selectedDept, tasks, filteredTasks]);
 
-  // Active Checklist Headers to render (Grouped Checklists - PeakScale style)
+  // Active Checklist Headers to render (Filtered Rendering by selected Parent Checklist)
   const checklistGroupsToRender = useMemo(() => {
-    const headersList: string[] = [];
+    // 1. If a specific Parent Checklist is selected from the menu:
+    if (selectedParentChecklist !== 'all') {
+      const hdr = selectedParentChecklist;
+      const safeStation = Array.isArray(stationTasks) ? stationTasks : [];
+      const hTasks = safeStation.filter(
+        (t) =>
+          !t.id?.startsWith('finalized-') &&
+          !t.id?.startsWith('submitted-') &&
+          (getTaskChecklistGroup(t) === hdr || t.checklistHeader === hdr)
+      );
 
-    // 1. ALWAYS include headers for every task present in filteredTasks!
-    // Active tasks must NEVER be hidden, even if their header was previously recorded in deletedChecklistHeaders when empty.
-    filteredTasks.forEach((t) => {
+      if (filterStatus === 'completed') {
+        const hasCompleted = hTasks.some((t) => t.completed);
+        return hasCompleted ? [hdr] : [];
+      }
+      if (filterStatus === 'remaining') {
+        const hasRemaining = hTasks.some((t) => !t.completed);
+        return hasRemaining ? [hdr] : [];
+      }
+      return [hdr];
+    }
+
+    // 2. If 'all' is selected:
+    const allHeaders: string[] = [];
+    const safeStation = Array.isArray(stationTasks) ? stationTasks : [];
+
+    // Gather all distinct checklist headers present in this station
+    safeStation.forEach((t) => {
       const hdr = getTaskChecklistGroup(t);
-      if (!headersList.includes(hdr)) {
-        headersList.push(hdr);
+      if (hdr && !allHeaders.includes(hdr)) {
+        allHeaders.push(hdr);
       }
     });
 
-    // 2. Relevant default template headers based on currentStation (only if NOT in deletedChecklistHeaders)
-    const relevantDefaults = CHECKLIST_HEADERS.filter((h) => {
-      if (deletedChecklistHeaders.includes(h)) return false;
-      if (currentStation === 'Manager') return true;
-      if (currentStation === 'Kitchen' && h.includes('Kitchen')) return true;
-      if (currentStation === 'Bar' && h.includes('Bar')) return true;
-      if (currentStation === 'Billing' && h.includes('Cashier')) return true;
-      if (currentStation === 'Service' && h.includes('Service')) return true;
-      if (currentStation === 'Housekeeping' && h.includes('Housekeeping')) return true;
-      return false;
+    const defaultHeaders = STATION_DEFAULT_HEADERS[currentStation] || [];
+    defaultHeaders.forEach((h) => {
+      if (!allHeaders.includes(h) && !deletedChecklistHeaders.includes(h)) {
+        allHeaders.push(h);
+      }
     });
 
-    relevantDefaults.forEach((h) => {
-      if (!headersList.includes(h)) headersList.push(h);
-    });
-
-    // 3. Robust Fallback: If filteredTasks has tasks, headersList MUST NEVER be empty!
-    if (filteredTasks.length > 0 && headersList.length === 0) {
-      headersList.push(
-        currentStation === 'Manager' ? 'Master Daily Operations Checklist' : `${currentStation} Daily Checklist`
-      );
+    if (filterStatus === 'completed') {
+      // In completed tab, show headers that have completed tasks
+      return allHeaders.filter((hdr) => {
+        const hTasks = safeStation.filter((t) => getTaskChecklistGroup(t) === hdr || t.checklistHeader === hdr);
+        return hTasks.some((t) => t.completed);
+      });
     }
 
-    return headersList;
-  }, [currentStation, filteredTasks, deletedChecklistHeaders, getTaskChecklistGroup]);
+    if (filterStatus === 'remaining') {
+      // In remaining tab: show headers that have remaining uncompleted tasks
+      return allHeaders.filter((hdr) => {
+        const hTasks = safeStation.filter(
+          (t) => !t.id?.startsWith('finalized-') && !t.id?.startsWith('submitted-') && (getTaskChecklistGroup(t) === hdr || t.checklistHeader === hdr)
+        );
+        return hTasks.some((t) => !t.completed);
+      });
+    }
+
+    // Default 'all' tab:
+    let activeHeaders = allHeaders;
+
+    // If search query is typed, also ensure the header has matching tasks
+    if (searchQuery.trim()) {
+      return activeHeaders.filter((hdr) => {
+        const hTasks = filteredTasks.filter((t) => getTaskChecklistGroup(t) === hdr || t.checklistHeader === hdr);
+        return hTasks.length > 0;
+      });
+    }
+
+    return activeHeaders;
+  }, [
+    stationTasks,
+    filteredTasks,
+    filterStatus,
+    getTaskChecklistGroup,
+    searchQuery,
+    selectedParentChecklist,
+    currentStation,
+    deletedChecklistHeaders,
+  ]);
 
   // Group filtered tasks by priority (for priority view)
   const safeFilteredTasks = Array.isArray(filteredTasks) ? filteredTasks : [];
@@ -2279,7 +2747,7 @@ export default function App() {
   const pendingFiltered = safeFilteredTasks.filter((t) => t?.priority === 'pending');
 
   const pendingUrgentCount = safeStationTasks.filter((t) => t?.priority === 'urgent' && !t?.completed).length;
-  const remainingCount = safeStationTasks.filter((t) => !t?.completed).length;
+  const remainingCount = tabCounts.remaining;
 
   // Gate the entire application with the Login Screen if unauthenticated
   if (!isAuthenticated || !currentUser) {
@@ -2481,8 +2949,6 @@ export default function App() {
         onTriggerQueueSync={handleTriggerManualQueueSync}
         onOpenDiagnostics={() => setIsDiagnosticsModalOpen(true)}
         firestoreConnectionState={firestoreConnectionState}
-        onOpenAdminApprovals={() => setIsAdminApprovalOpen(true)}
-        pendingApprovalCount={pendingApprovalCount}
         onOpenTaskRegister={() => setIsTaskRegisterOpen(true)}
       />
 
@@ -2519,7 +2985,7 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8 pb-28 sm:pb-12">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-36 sm:pb-24">
         <PullToRefresh onRefresh={handlePullToRefresh}>
           {isAnalyticsOpen ? (
             <TaskAnalyticsDashboard
@@ -2797,7 +3263,7 @@ export default function App() {
             </div>
 
             <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-              {canAddTask && (
+              {isHemenAdmin && (
                 <button
                   type="button"
                   onClick={() => handleOpenAssignModal(currentStation !== 'Manager' ? (currentStation as TaskDepartment) : 'Kitchen')}
@@ -2812,7 +3278,7 @@ export default function App() {
                 </button>
               )}
 
-              {canAddTask && (
+              {isHemenAdmin && (
                 <button
                   type="button"
                   onClick={handleResetToDefaultTemplate}
@@ -2874,7 +3340,7 @@ export default function App() {
 
               {/* Action Buttons */}
               <div className="flex flex-wrap items-center gap-2 self-stretch sm:self-auto">
-                {canAddTask && (
+                {isHemenAdmin && (
                   <button
                     type="button"
                     id="add-daily-task-action-btn"
@@ -2890,7 +3356,7 @@ export default function App() {
                   </button>
                 )}
 
-                {canAddTask && (
+                {isHemenAdmin && (
                   <button
                     type="button"
                     onClick={handleResetToDefaultTemplate}
@@ -3043,7 +3509,7 @@ export default function App() {
                           : 'text-zinc-400 hover:text-white'
                       }`}
                     >
-                      All ({filteredTasks.length})
+                      All ({tabCounts.all})
                     </button>
                     <button
                       type="button"
@@ -3058,7 +3524,7 @@ export default function App() {
                           : 'text-zinc-400 hover:text-white'
                       }`}
                     >
-                      Remaining ({filteredTasks.filter((t) => !t.completed).length})
+                      Remaining ({tabCounts.remaining})
                     </button>
                     <button
                       type="button"
@@ -3073,27 +3539,12 @@ export default function App() {
                           : 'text-zinc-400 hover:text-white'
                       }`}
                     >
-                      Done ({filteredTasks.filter((t) => t.completed).length})
+                      Done ({tabCounts.done})
                     </button>
-                    {pendingApprovalCount > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setFilterStatus(filterStatus === 'awaiting_approval' ? 'all' : 'awaiting_approval')}
-                        className={`flex-1 sm:flex-initial px-2.5 py-1.5 transition text-center min-h-[36px] cursor-pointer flex items-center gap-1 ${
-                          filterStatus === 'awaiting_approval'
-                            ? 'bg-amber-500 text-black font-black'
-                            : 'bg-amber-500/10 text-amber-500 hover:bg-amber-500/20'
-                        }`}
-                        title="Filter tasks awaiting Hemen Das approval"
-                      >
-                        <ShieldCheck className="w-3.5 h-3.5" />
-                        <span>Awaiting Approval ({pendingApprovalCount})</span>
-                      </button>
-                    )}
                   </div>
 
                   {/* Checklist Header Action Buttons */}
-                  {groupBy === 'checklistHeader' && (
+                  {groupBy === 'checklistHeader' && isHemenAdmin && (
                     <div className="flex items-center gap-1.5 sm:gap-2">
                       <button
                         type="button"
@@ -3133,59 +3584,6 @@ export default function App() {
               </div>
             )}
 
-            {/* 👑 Hemen Das Quality Approvals & Inspection Hub Banner */}
-            {canAccessTools && pendingApprovalTasks.length > 0 && (
-              <div
-                id="hemen-das-approval-hub-banner"
-                className={`p-3.5 sm:p-5 border-2 sm:border-4 rounded-xs shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3 sm:gap-4 transition-all animate-in slide-in-from-top-2 ${
-                  isLightMode
-                    ? 'bg-amber-50 border-amber-500 text-amber-950'
-                    : 'bg-amber-950/60 border-amber-500 text-amber-100'
-                }`}
-              >
-                <div className="flex items-start sm:items-center gap-3">
-                  <div className="p-2.5 bg-amber-500 text-black rounded-xs flex-shrink-0 shadow-md">
-                    <ShieldCheck className="w-6 h-6 stroke-[2.5]" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs sm:text-sm font-black uppercase tracking-tight text-amber-600 dark:text-amber-400">
-                        👑 HEMEN DAS QUALITY APPROVALS HUB
-                      </span>
-                      <span className="px-2 py-0.5 bg-red-600 text-white text-[10px] font-black uppercase rounded-full">
-                        {pendingApprovalTasks.length} Awaiting Inspection
-                      </span>
-                    </div>
-                    <p className="text-xs font-semibold mt-0.5 opacity-90">
-                      Staff have submitted task proofs. Inspect photo clarity, equipment gauges, and approve shift tasks.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 w-full md:w-auto self-end md:self-auto">
-                  <button
-                    type="button"
-                    id="banner-open-approvals-btn"
-                    onClick={() => setIsAdminApprovalOpen(true)}
-                    className="flex-1 sm:flex-initial px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-black font-black uppercase text-xs tracking-tight transition shadow-sm rounded-xs cursor-pointer flex items-center justify-center gap-1.5 active:scale-95"
-                  >
-                    <ShieldCheck className="w-4 h-4 stroke-[2.5]" />
-                    <span>Inspect Photo Proofs ({pendingApprovalTasks.length})</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    id="banner-approve-all-btn"
-                    onClick={handleApproveAllPending}
-                    className="flex-1 sm:flex-initial px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-black uppercase text-xs tracking-tight transition shadow-md rounded-xs cursor-pointer flex items-center justify-center gap-1.5 active:scale-95"
-                  >
-                    <Check className="w-4 h-4 stroke-[3]" />
-                    <span>✓ 1-Click Approve All</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
             {/* View Mode: Scannable Plain Text Brief vs Interactive Checklist Sections */}
             {isScannableMode ? (
               <ScannableBriefView
@@ -3204,117 +3602,172 @@ export default function App() {
                 copied={copied}
               />
             ) : groupBy === 'checklistHeader' ? (
-              /* ================= PEAKSCALE-STYLE GROUPED CHECKLISTS VIEW ================= */
-              <div className="space-y-4 sm:space-y-6">
-                {filteredTasks.length === 0 && checklistGroupsToRender.length === 0 ? (
-                  <div
-                    className={`p-8 text-center border-2 border-dashed space-y-3 ${
-                      isLightMode
-                        ? 'bg-white border-zinc-300 text-zinc-600'
-                        : 'bg-zinc-900/40 border-zinc-800 text-zinc-400'
-                    }`}
-                  >
-                    <p className="text-base font-black uppercase tracking-tight">
-                      No active checklists found
-                    </p>
-                    <p className="text-xs font-bold text-zinc-500 max-w-md mx-auto">
-                      All standard templates have been deleted or no tasks exist. You can create a new custom checklist or restore the original templates at any time.
-                    </p>
-                    <div className="flex items-center justify-center gap-3 pt-2">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenAssignModal()}
-                        className="px-4 py-2 text-xs font-black uppercase tracking-tight bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
-                      >
-                        + Create New Checklist
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleRestoreDefaultChecklists}
-                        className={`px-4 py-2 text-xs font-black uppercase tracking-tight border cursor-pointer ${
-                          isLightMode
-                            ? 'bg-zinc-100 hover:bg-zinc-200 text-black border-zinc-300'
-                            : 'bg-zinc-800 hover:bg-zinc-700 text-white border-zinc-700'
-                        }`}
-                      >
-                        Restore Default Templates
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  checklistGroupsToRender.map((header, groupIdx) => {
-                    const headerTasks = filteredTasks.filter((t) => {
-                      const taskGroup = getTaskChecklistGroup(t);
-                      if (taskGroup === header) return true;
-                      if (t.checklistHeader === header) return true;
-                      // Fallback for orphan tasks whose header is not rendered in any group
-                      if (
-                        groupIdx === 0 &&
-                        !checklistGroupsToRender.includes(taskGroup) &&
-                        !checklistGroupsToRender.includes(t.checklistHeader || '')
-                      ) {
-                        return true;
-                      }
-                      return false;
-                    });
+              /* ================= GOOGLE FORM-STYLE LIVE SHIFT CHECKLIST VIEW WITH PARENT CHECKLIST NAVIGATION ================= */
+              <div className="flex flex-col lg:flex-row items-start gap-4 xl:gap-6">
+                {/* 1. Dedicated Parent Checklists Menu / Sidebar */}
+                <ChecklistsSidebar
+                  checklists={parentChecklistsList}
+                  selectedChecklist={selectedParentChecklist}
+                  onSelectChecklist={(hdr) => {
+                    setSelectedParentChecklist(hdr);
+                    handleEnsureChecklistTasks(hdr);
+                  }}
+                  isLightMode={isLightMode}
+                  currentStation={currentStation}
+                  onNewChecklist={isHemenAdmin ? () => handleOpenAssignModal() : undefined}
+                  isAdmin={isHemenAdmin}
+                />
 
-                    return (
-                      <ChecklistGroupSection
-                        key={header}
-                        checklistHeader={header}
-                        tasks={headerTasks}
-                        onToggleTask={handleToggleTask}
-                        onEditTask={canEditTask ? handleEditTask : undefined}
-                        onDeleteTask={canDeleteTask ? handleDeleteTask : undefined}
-                        onUnpackSubTasks={handleUnpackSubTasks}
-                        onDeleteChecklist={canDeleteTask ? handleDeleteChecklist : undefined}
-                        onRenameChecklist={canEditTask ? handleRenameChecklist : undefined}
-                        onViewMedia={setSelectedMedia}
-                        onAddMediaToTask={handleAddMediaToTask}
-                        onUpdateTaskNote={handleUpdateTaskNote}
-                        onToggleSubTask={handleToggleSubTask}
-                        onAddSubTaskMedia={handleAddSubTaskMedia}
-                        onUpdateSubTaskNote={handleUpdateSubTaskNote}
-                        onApproveTask={handleApproveTask}
-                        onRejectTask={handleRejectTask}
-                        staffList={staffList}
-                        onAddTaskToHeader={canAddTask ? handleAddTaskToHeader : undefined}
-                        onUpgradeChecklist={canAddTask ? handleUpgradeChecklist : undefined}
-                        blockedTaskId={blockedTaskId}
-                      />
-                    );
-                  })
-                )}
-
-                {/* Closing Prompt Bar */}
-                <footer className="bg-white text-black p-5 sm:p-8 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4 border-2 sm:border-4 border-black">
-                  <div className="text-center sm:text-left">
-                    <div className="flex items-center justify-center sm:justify-start gap-2 mb-1">
-                      <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping" />
-                      <span className="text-xs font-black uppercase tracking-widest text-red-600">
-                        {currentStation === 'Manager' ? 'Shift Sign-Off' : `${currentStation} Station Sign-Off`}
-                      </span>
-                    </div>
-                    <h3 className="text-xl sm:text-3xl font-black uppercase tracking-tight text-black italic">
-                      Which tasks should I mark as completed today?
-                    </h3>
-                    <p className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-zinc-600 mt-1">
-                      Tap sub-task checkboxes, attach mandatory photo proof, add shift notes, or chat with the assistant.
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0 w-full sm:w-auto">
-                    <button
-                      type="button"
-                      id="copy-scannable-btn"
-                      onClick={handleCopyBrief}
-                      className="flex-1 sm:flex-initial px-4 sm:px-5 py-2.5 sm:py-3 bg-zinc-200 hover:bg-zinc-300 text-black text-xs font-black uppercase tracking-tight transition flex items-center justify-center gap-2 cursor-pointer min-h-[44px]"
+                {/* 2. Main Google Form Filtered Active Checklist View */}
+                <div className="flex-1 min-w-0 w-full space-y-4 sm:space-y-6">
+                  {checklistGroupsToRender.length === 0 ? (
+                    <div
+                      className={`py-12 sm:py-16 text-center border-2 border-dashed p-6 sm:p-10 space-y-3 ${
+                        isLightMode
+                          ? 'bg-white border-zinc-300 text-zinc-600'
+                          : 'bg-zinc-900/40 border-zinc-800 text-zinc-400'
+                      }`}
                     >
-                      <Share2 className="w-4 h-4 stroke-[2.5]" />
-                      <span>{copied ? 'Copied!' : 'Copy Summary'}</span>
-                    </button>
-                  </div>
-                </footer>
+                      <div className="w-14 h-14 bg-purple-100 dark:bg-purple-950/60 text-[#673ab7] dark:text-purple-300 flex items-center justify-center mx-auto rounded-full">
+                        <ClipboardList className="w-7 h-7 stroke-[2]" />
+                      </div>
+                      <p className="text-base sm:text-lg font-black uppercase tracking-tight text-zinc-900 dark:text-white">
+                        {filterStatus === 'completed'
+                          ? 'All Checklists Finalized & Recorded'
+                          : selectedParentChecklist !== 'all'
+                          ? `No Tasks for "${selectedParentChecklist}"`
+                          : 'No Checklists for this Station'}
+                      </p>
+                      <p className="text-xs font-bold text-zinc-500 max-w-md mx-auto">
+                        {filterStatus === 'completed'
+                          ? 'Shift responses finalized and saved in Master Task Register.'
+                          : 'Open a blank checklist template or create tasks to begin recording shift responses.'}
+                      </p>
+                      <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                        {selectedParentChecklist !== 'all' && PREDEFINED_CHECKLIST_TEMPLATES[selectedParentChecklist] && (
+                          <button
+                            type="button"
+                            onClick={() => handleEnsureChecklistTasks(selectedParentChecklist)}
+                            className="px-4 py-2 text-xs font-black uppercase tracking-tight bg-[#673ab7] hover:bg-[#58309e] text-white cursor-pointer shadow-xs rounded-md"
+                          >
+                            Load {selectedParentChecklist} Questions
+                          </button>
+                        )}
+                        {isHemenAdmin && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenAssignModal()}
+                              className="px-4 py-2 text-xs font-black uppercase tracking-tight bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer rounded-md"
+                            >
+                              + Create New Checklist
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleRestoreDefaultChecklists}
+                              className={`px-4 py-2 text-xs font-black uppercase tracking-tight border cursor-pointer rounded-md ${
+                                isLightMode
+                                  ? 'bg-zinc-100 hover:bg-zinc-200 text-black border-zinc-300'
+                                  : 'bg-zinc-800 hover:bg-zinc-700 text-white border-zinc-700'
+                              }`}
+                            >
+                              Restore Default Templates
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    checklistGroupsToRender.map((header, groupIdx) => {
+                      const headerTasks = filteredTasks.filter((t) => {
+                        // In Google Form-style live entry view, do not display finalized permanent records in the active form
+                        if (t.id?.startsWith('finalized-') || t.id?.startsWith('submitted-')) {
+                          return false;
+                        }
+                        const taskGroup = getTaskChecklistGroup(t);
+                        if (taskGroup === header) return true;
+                        if (t.checklistHeader === header) return true;
+                        // Fallback for orphan tasks whose header is not rendered in any group (only in 'all' view)
+                        if (
+                          selectedParentChecklist === 'all' &&
+                          groupIdx === 0 &&
+                          !checklistGroupsToRender.includes(taskGroup) &&
+                          !checklistGroupsToRender.includes(t.checklistHeader || '')
+                        ) {
+                          return true;
+                        }
+                        return false;
+                      });
+
+                      const allGroupTasks = safeStationTasks.filter((t) => {
+                        if (t.id?.startsWith('finalized-') || t.id?.startsWith('submitted-')) {
+                          return false;
+                        }
+                        const taskGroup = getTaskChecklistGroup(t);
+                        return taskGroup === header || t.checklistHeader === header;
+                      });
+
+                      return (
+                        <ChecklistGroupSection
+                          key={header}
+                          checklistHeader={header}
+                          tasks={headerTasks}
+                          allGroupTasks={allGroupTasks}
+                          isSingleChecklist={checklistGroupsToRender.length === 1}
+                          onToggleTask={handleToggleTask}
+                          onEditTask={isHemenAdmin ? handleEditTask : undefined}
+                          onDeleteTask={isHemenAdmin ? handleDeleteTask : undefined}
+                          onUnpackSubTasks={handleUnpackSubTasks}
+                          onDeleteChecklist={isHemenAdmin ? handleDeleteChecklist : undefined}
+                          onRenameChecklist={isHemenAdmin ? handleRenameChecklist : undefined}
+                          onViewMedia={setSelectedMedia}
+                          onAddMediaToTask={handleAddMediaToTask}
+                          onUpdateTaskNote={handleUpdateTaskNote}
+                          onToggleSubTask={handleToggleSubTask}
+                          onAddSubTaskMedia={handleAddSubTaskMedia}
+                          onUpdateSubTaskNote={handleUpdateSubTaskNote}
+                          onApproveTask={handleApproveTask}
+                          onRejectTask={handleRejectTask}
+                          staffList={staffList}
+                          onAddTaskToHeader={isHemenAdmin ? handleAddTaskToHeader : undefined}
+                          onUpgradeChecklist={isHemenAdmin ? handleUpgradeChecklist : undefined}
+                          onSubmitChecklist={handleSubmitChecklist}
+                          blockedTaskId={blockedTaskId}
+                        />
+                      );
+                    })
+                  )}
+
+                  {/* Closing Prompt Bar */}
+                  <footer className="bg-white text-black p-5 sm:p-8 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4 border-2 sm:border-4 border-black">
+                    <div className="text-center sm:text-left">
+                      <div className="flex items-center justify-center sm:justify-start gap-2 mb-1">
+                        <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping" />
+                        <span className="text-xs font-black uppercase tracking-widest text-red-600">
+                          {currentStation === 'Manager' ? 'Shift Sign-Off' : `${currentStation} Station Sign-Off`}
+                        </span>
+                      </div>
+                      <h3 className="text-xl sm:text-3xl font-black uppercase tracking-tight text-black italic">
+                        Which tasks should I mark as completed today?
+                      </h3>
+                      <p className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-zinc-600 mt-1">
+                        Tap sub-task checkboxes, attach mandatory photo proof, add shift notes, or chat with the assistant.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0 w-full sm:w-auto">
+                      <button
+                        type="button"
+                        id="copy-scannable-btn"
+                        onClick={handleCopyBrief}
+                        className="flex-1 sm:flex-initial px-4 sm:px-5 py-2.5 sm:py-3 bg-zinc-200 hover:bg-zinc-300 text-black text-xs font-black uppercase tracking-tight transition flex items-center justify-center gap-2 cursor-pointer min-h-[44px]"
+                      >
+                        <Share2 className="w-4 h-4 stroke-[2.5]" />
+                        <span>{copied ? 'Copied!' : 'Copy Summary'}</span>
+                      </button>
+                    </div>
+                  </footer>
+                </div>
               </div>
             ) : groupBy === 'department' ? (
               /* ================= MASTER DEPARTMENT-WISE DAILY CHECKLISTS ================= */
@@ -3464,7 +3917,7 @@ export default function App() {
         setActiveTab={setActiveMobileTab}
         currentStation={currentStation}
         onOpenStationModal={() => canSwitchStations && setIsStationModalOpen(true)}
-        onOpenAssignModal={() => canAddTask && handleOpenAssignModal()}
+        onOpenAssignModal={() => isHemenAdmin && handleOpenAssignModal()}
         onToggleChat={() => setIsChatOpen(!isChatOpen)}
         isChatOpen={isChatOpen}
         onOpenTools={() => setIsToolsModalOpen(true)}
@@ -3472,6 +3925,7 @@ export default function App() {
         tasksCount={stationTasks.length}
         remainingTasksCount={remainingCount}
         urgentCount={pendingUrgentCount}
+        isHemenAdmin={isHemenAdmin}
       />
 
       {/* Operations Tools & Management Modal */}
@@ -3497,10 +3951,25 @@ export default function App() {
         staffCount={staffList.filter((s) => s && s.isActive !== false && s.active !== false).length}
         onOpenDiagnostics={() => setIsDiagnosticsModalOpen(true)}
         isFirebaseConnected={isFirebaseConnected}
-        onOpenAdminApprovals={() => setIsAdminApprovalOpen(true)}
-        pendingApprovalCount={pendingApprovalCount}
         onOpenTaskRegister={() => setIsTaskRegisterOpen(true)}
         onTriggerTestAlarm={handleTriggerTestAlarm}
+        onTriggerTestUrgentAlert={handleTriggerTestUrgentAlert}
+      />
+
+      {/* Desktop-Style Incomplete Urgent Task Deadline Alert Banner */}
+      <UrgentDeadlineBanner
+        alerts={urgentAlerts}
+        onDismissAlert={(taskId) => {
+          setDismissedUrgentAlertIds((prev) => new Set(prev).add(taskId));
+          setUrgentAlerts((prev) => prev.filter((a) => a.task.id !== taskId));
+        }}
+        onDismissAll={() => {
+          setDismissedUrgentAlertIds(new Set(urgentAlerts.map((a) => a.task.id)));
+          setUrgentAlerts([]);
+        }}
+        onJumpToTask={handleJumpToUrgentTask}
+        onCompleteTask={handleToggleTask}
+        isLightMode={isLightMode}
       />
 
       {/* 10-Minute Pre-Task Extreme Loud Siren & PWA Push Reminder Modal */}
@@ -3513,16 +3982,6 @@ export default function App() {
           setActiveAlarm((prev) => ({ ...prev, isOpen: false }));
         }}
         onJumpToTask={handleJumpToTaskFromAlarm}
-      />
-
-      {/* Admin Photo Verification & Task Approval Modal */}
-      <AdminApprovalModal
-        isOpen={isAdminApprovalOpen}
-        onClose={() => setIsAdminApprovalOpen(false)}
-        tasks={stationTasks}
-        onApproveTask={handleApproveTask}
-        onRejectTask={handleRejectTask}
-        onViewMedia={setSelectedMedia}
       />
 
       {/* Station Selector Modal (Station Isolation & Lock) */}

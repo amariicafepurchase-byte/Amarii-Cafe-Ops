@@ -84,6 +84,8 @@ export type ChecklistHeader =
   | 'Bar Opening Checklist'
   | 'Bar Closing Checklist'
   | 'Cashier Opening/Closing'
+  | 'Service Opening Checklist'
+  | 'Service Closing Checklist'
   | 'Service Opening/Closing'
   | 'Housekeeping Opening/Closing'
   | 'General Operations';
@@ -94,6 +96,8 @@ export const CHECKLIST_HEADERS: ChecklistHeader[] = [
   'Bar Opening Checklist',
   'Bar Closing Checklist',
   'Cashier Opening/Closing',
+  'Service Opening Checklist',
+  'Service Closing Checklist',
   'Service Opening/Closing',
   'Housekeeping Opening/Closing',
   'General Operations',
@@ -105,6 +109,8 @@ export const HEADER_TIME_SUGGESTIONS: Record<string, { start: string; end: strin
   'Bar Opening Checklist': { start: '09:00 AM', end: '10:30 AM' },
   'Bar Closing Checklist': { start: '10:00 PM', end: '11:15 PM' },
   'Cashier Opening/Closing': { start: '09:30 AM', end: '11:30 PM' },
+  'Service Opening Checklist': { start: '09:30 AM', end: '11:00 AM' },
+  'Service Closing Checklist': { start: '10:00 PM', end: '11:30 PM' },
   'Service Opening/Closing': { start: '09:30 AM', end: '11:00 PM' },
   'Housekeeping Opening/Closing': { start: '08:00 AM', end: '11:30 PM' },
   'General Operations': { start: '09:00 AM', end: '06:00 PM' },
@@ -199,10 +205,15 @@ export interface ChatMessage {
 export interface ShiftRecord {
   id: string;
   timestamp: string;
-  label: string;
+  label?: string;
   totalTasks: number;
   completedTasks: number;
-  result: AnalysisResult;
+  result?: AnalysisResult;
+  department?: string;
+  staffName?: string;
+  completionRate?: number;
+  tasks?: TaskItem[];
+  outlet?: string;
 }
 
 export type AuthRole = 'admin' | 'manager' | 'staff';

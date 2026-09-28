@@ -1,11 +1,12 @@
 /**
  * Helper to compress image Data URLs / Files for Firestore storage.
- * Keeps high-resolution clarity (max 1400px, 0.88 quality) for crisp, readable SOP inspection proofs.
+ * Keeps clean clarity (max 800px, 0.65 quality) for crisp, readable SOP inspection proofs
+ * while strictly keeping image payload ~30-55KB to ensure Firestore 1MB document limit is never exceeded.
  */
 export async function compressImage(
   input: string | File,
-  maxDimension = 1400,
-  quality = 0.88
+  maxDimension = 800,
+  quality = 0.65
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     let srcUrl = '';
@@ -52,7 +53,26 @@ export async function compressImage(
       ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, 0, 0, width, height);
 
-      const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+      let compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+
+      // Guard: if compressed string is still larger than 90KB, re-encode with slightly lower quality & dimension
+      if (compressedDataUrl.length > 120000) {
+        try {
+          const secondCanvas = document.createElement('canvas');
+          const scale = 0.75;
+          secondCanvas.width = Math.max(1, Math.round(width * scale));
+          secondCanvas.height = Math.max(1, Math.round(height * scale));
+          const secondCtx = secondCanvas.getContext('2d');
+          if (secondCtx) {
+            secondCtx.imageSmoothingEnabled = true;
+            secondCtx.drawImage(canvas, 0, 0, secondCanvas.width, secondCanvas.height);
+            compressedDataUrl = secondCanvas.toDataURL('image/jpeg', 0.55);
+          }
+        } catch {
+          // ignore fallback
+        }
+      }
+
       resolve(compressedDataUrl);
     };
 

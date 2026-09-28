@@ -28,6 +28,7 @@ interface AndroidBottomNavProps {
   staffCount?: number;
   onOpenAnalytics?: () => void;
   isAnalyticsActive?: boolean;
+  isHemenAdmin?: boolean;
 }
 
 export const AndroidBottomNav: React.FC<AndroidBottomNavProps> = ({
@@ -42,9 +43,10 @@ export const AndroidBottomNav: React.FC<AndroidBottomNavProps> = ({
   isToolsOpen = false,
   remainingTasksCount,
   urgentCount,
+  isHemenAdmin = false,
 }) => {
   const { isLightMode } = useTheme();
-  const { canAddTask, canSwitchStations, canAccessTools } = useAuth();
+  const { canSwitchStations, canAccessTools } = useAuth();
 
   return (
     <nav
@@ -56,10 +58,10 @@ export const AndroidBottomNav: React.FC<AndroidBottomNavProps> = ({
           : 'bg-zinc-950/95 border-zinc-800 text-zinc-100'
       }`}
     >
-      {/* 1. Tasks / Shift */}
+      {/* 1. Checklists */}
       <button
         type="button"
-        id="android-nav-tasks"
+        id="android-nav-checklists"
         onClick={() => {
           triggerHaptic('light');
           setActiveTab('tasks');
@@ -91,7 +93,7 @@ export const AndroidBottomNav: React.FC<AndroidBottomNavProps> = ({
             </span>
           ) : null}
         </div>
-        <span className="text-[10px] uppercase tracking-tighter mt-1">Tasks</span>
+        <span className="text-[10px] uppercase tracking-tighter mt-1">Checklists</span>
       </button>
 
       {/* 2. Station Switcher */}
@@ -117,8 +119,8 @@ export const AndroidBottomNav: React.FC<AndroidBottomNavProps> = ({
         </span>
       </button>
 
-      {/* 3. Primary Center Elevated FAB: + ADD TASK */}
-      {canAddTask ? (
+      {/* 3. Primary Center Elevated FAB: + ADD TASK (HEMEN DAS ONLY) */}
+      {isHemenAdmin ? (
         <div className="flex-1 flex justify-center -mt-5">
           <button
             type="button"

@@ -246,7 +246,7 @@ export const exportReportAsPdf = async (
       doc.setTextColor(100, 100, 100);
       const auditMeta = [];
       if (task.notes) auditMeta.push(`Note: ${task.notes.slice(0, 30)}`);
-      if (task.approvalStatus === 'approved') auditMeta.push('✓ Approved by Hemen Das');
+      if (task.approvalStatus === 'approved') auditMeta.push(task.approvedBy ? `✓ Finalized (${task.approvedBy})` : '✓ Finalized Record');
       if (task.rejectionReason) auditMeta.push(`Rejection: ${task.rejectionReason.slice(0, 25)}`);
       if (auditMeta.length > 0) {
         doc.text(auditMeta.join(' | '), margin + 26, currentY + 8.5);
@@ -474,7 +474,7 @@ export const exportReportAsExcel = (
     <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Assignee</Data></Cell>
     <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Completed At</Data></Cell>
     <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Notes &amp; Proofs</Data></Cell>
-    ${isDetailed ? '<Cell ss:StyleID="ColHeader"><Data ss:Type="String">Hemen Approval</Data></Cell><Cell ss:StyleID="ColHeader"><Data ss:Type="String">Audit Verification</Data></Cell>' : ''}
+    ${isDetailed ? '<Cell ss:StyleID="ColHeader"><Data ss:Type="String">Finalization Status</Data></Cell><Cell ss:StyleID="ColHeader"><Data ss:Type="String">Audit Verification</Data></Cell>' : ''}
    </Row>
 
    <!-- Task Data Rows -->
@@ -490,7 +490,7 @@ export const exportReportAsExcel = (
        const assigneeEsc = (t.assignee || t.completedBy || 'Unassigned').replace(/&/g, '&amp;');
        const compAt = t.completedAt ? new Date(t.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-';
        const notesEsc = (t.notes || t.details || '-').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-       const approvalEsc = t.approvalStatus === 'approved' ? 'APPROVED BY HEMEN' : t.approvalStatus === 'rejected' ? `REJECTED: ${t.rejectionReason || ''}` : 'Pending';
+       const approvalEsc = t.approvalStatus === 'approved' ? (t.approvedBy ? `FINALIZED (${t.approvedBy})` : 'FINALIZED') : t.approvalStatus === 'rejected' ? `REJECTED: ${t.rejectionReason || ''}` : 'Active';
        const auditEsc = t.isPhotoMandatory || t.isVideoMandatory ? 'Photo/Video Required' : 'Standard';
 
        return `<Row ss:Height="20">
@@ -763,7 +763,7 @@ ${notes.trim() ? `
           <strong>${t.title}</strong>
           ${t.checklistHeader ? `<br><small style="color: #6B7280;">Checklist: ${t.checklistHeader}</small>` : ''}
           ${t.notes ? `<br><small style="color: #4B5563;">Note: ${t.notes}</small>` : ''}
-          ${isDetailed && t.approvalStatus === 'approved' ? '<br><small style="color: #059669; font-weight: bold;">✓ Approved by Hemen Das</small>' : ''}
+          ${isDetailed && t.approvalStatus === 'approved' ? `<br><small style="color: #059669; font-weight: bold;">✓ Finalized Record${t.approvedBy ? ` (${t.approvedBy})` : ''}</small>` : ''}
           ${isDetailed && t.rejectionReason ? `<br><small style="color: #DC2626; font-weight: bold;">❌ Rejection: ${t.rejectionReason}</small>` : ''}
         </td>
         <td>${t.department || 'General'}</td>

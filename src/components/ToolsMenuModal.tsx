@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   BellRing,
   Volume2,
+  AlertTriangle,
 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
@@ -27,8 +28,6 @@ interface ToolsMenuModalProps {
   isOpen: boolean;
   onClose: () => void;
   onOpenTaskDirectory?: () => void;
-  onOpenAdminApprovals?: () => void;
-  pendingApprovalCount?: number;
   onOpenTaskRegister?: () => void;
   onToggleAnalytics?: () => void;
   onOpenPdfModal?: () => void;
@@ -49,14 +48,13 @@ interface ToolsMenuModalProps {
   onOpenDiagnostics?: () => void;
   isFirebaseConnected?: boolean;
   onTriggerTestAlarm?: () => void;
+  onTriggerTestUrgentAlert?: () => void;
 }
 
 export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
   isOpen,
   onClose,
   onOpenTaskDirectory,
-  onOpenAdminApprovals,
-  pendingApprovalCount = 0,
   onOpenTaskRegister,
   onToggleAnalytics,
   onOpenPdfModal,
@@ -77,6 +75,7 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
   onOpenDiagnostics,
   isFirebaseConnected = true,
   onTriggerTestAlarm,
+  onTriggerTestUrgentAlert,
 }) => {
   const { isLightMode } = useTheme();
   const { isAdmin, isManager, canAddTask, canAccessTools } = useAuth();
@@ -168,42 +167,6 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
 
         {/* Menu Options */}
         <div className="p-3 space-y-1.5">
-          {/* Admin Quality Approvals Hub */}
-          {(isAdmin || isManager) && onOpenAdminApprovals && (
-            <button
-              type="button"
-              id="tools-admin-approvals-btn"
-              onClick={() => {
-                onClose();
-                onOpenAdminApprovals();
-              }}
-              className={`w-full flex items-center gap-3 px-3.5 py-3 text-xs font-bold text-left transition cursor-pointer rounded-sm border ${
-                (pendingApprovalCount || 0) > 0
-                  ? 'bg-amber-500 text-black border-amber-600 shadow-md'
-                  : isLightMode
-                  ? 'bg-emerald-50 hover:bg-emerald-100 border-emerald-300 text-emerald-950'
-                  : 'bg-[#111F17] hover:bg-[#1A3024] border-emerald-700 text-emerald-300'
-              }`}
-            >
-              <div className="p-2 rounded bg-black/10 text-inherit">
-                <ShieldCheck className="w-4 h-4 stroke-[2.5]" />
-              </div>
-              <div className="flex-1">
-                <div className="font-black uppercase text-[11px] tracking-tight flex items-center justify-between">
-                  <span>👑 Admin Verification & Approvals</span>
-                  {(pendingApprovalCount || 0) > 0 && (
-                    <span className="px-2 py-0.5 bg-red-600 text-white text-[10px] font-mono font-black rounded-full shadow-xs">
-                      {pendingApprovalCount} Pending
-                    </span>
-                  )}
-                </div>
-                <div className={`text-[10px] font-medium ${(pendingApprovalCount || 0) > 0 ? 'text-black/80' : 'text-zinc-500'}`}>
-                  Owner Hemen Das photo quality inspection & 1-click approvals
-                </div>
-              </div>
-            </button>
-          )}
-
           {/* Master Task Register & Audit Ledger (Hemen Das & Managers) */}
           {(isAdmin || isManager) && onOpenTaskRegister && (
             <button
@@ -263,6 +226,38 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
                 </div>
                 <div className="text-[10px] text-zinc-400 font-normal">
                   Test dual-oscillator extreme loud siren, vibration & mobile push notification
+                </div>
+              </div>
+            </button>
+          )}
+
+          {/* 30-Min Urgent Task Desktop Notification & Alert Test */}
+          {onTriggerTestUrgentAlert && (
+            <button
+              type="button"
+              id="tools-test-urgent-deadline-alert-btn"
+              onClick={() => {
+                onClose();
+                onTriggerTestUrgentAlert();
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-3 text-xs font-bold text-left transition cursor-pointer rounded-sm border ${
+                isLightMode
+                  ? 'bg-red-50 hover:bg-red-100 border-red-300 text-red-950'
+                  : 'bg-red-950/40 hover:bg-red-900/60 border-red-700 text-red-200'
+              }`}
+            >
+              <div className="p-2 rounded bg-red-600 text-white animate-pulse">
+                <AlertTriangle className="w-4 h-4 stroke-[2.5]" />
+              </div>
+              <div className="flex-1">
+                <div className="font-black uppercase text-[11px] tracking-tight flex items-center justify-between">
+                  <span>🚨 Test 30-Min Urgent Alert (Desktop Alert)</span>
+                  <span className="text-[9px] font-bold bg-red-600 text-white px-1.5 py-0.2 rounded-xs">
+                    DESKTOP ALERT
+                  </span>
+                </div>
+                <div className="text-[10px] text-zinc-400 font-normal">
+                  Test desktop notification, audio chime & in-app banner for urgent tasks within 30m of deadline
                 </div>
               </div>
             </button>

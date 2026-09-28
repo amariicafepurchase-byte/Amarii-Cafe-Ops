@@ -14,16 +14,20 @@ import {
   ChevronUp,
   AlertCircle,
   Tag,
-  CheckSquare,
   Trash2,
   Edit2,
   Check,
   X,
   Zap,
+  Lock,
+  Send,
+  FileCheck2,
+  CheckCircle2,
 } from 'lucide-react';
-import { TaskItem, ChecklistHeader, TaskMedia, StaffMember } from '../types';
+import { TaskItem, ChecklistHeader, TaskMedia, StaffMember, HEADER_TIME_SUGGESTIONS } from '../types';
 import { TaskCard } from './TaskCard';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import { evaluateTaskTimeStatus } from '../utils/timeEvaluation';
 
 interface ChecklistGroupSectionProps {
@@ -47,7 +51,10 @@ interface ChecklistGroupSectionProps {
   onRejectTask?: (taskId: string, reason: string) => void;
   staffList?: StaffMember[];
   onAddTaskToHeader?: (headerName: string) => void;
+  onSubmitChecklist?: (headerName: string) => void;
   blockedTaskId?: string | null;
+  allGroupTasks?: TaskItem[];
+  isSingleChecklist?: boolean;
 }
 
 export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
@@ -71,119 +78,136 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
   onRejectTask,
   staffList = [],
   onAddTaskToHeader,
+  onSubmitChecklist,
   blockedTaskId = null,
+  allGroupTasks,
+  isSingleChecklist = true,
 }) => {
   const resolvedHeaderName = (checklistHeader || headerName || 'General Operations') as string;
   const { isLightMode } = useTheme();
+  const { isAdmin, isStaff, currentUser } = useAuth();
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
   const [confirmDeleteChecklist, setConfirmDeleteChecklist] = useState<boolean>(false);
   const [isRenaming, setIsRenaming] = useState<boolean>(false);
   const [renameDraft, setRenameDraft] = useState<string>(resolvedHeaderName);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [justSubmitted, setJustSubmitted] = useState<boolean>(false);
 
   const safeTasks = Array.isArray(tasks) ? tasks : [];
-  const completedCount = safeTasks.filter((t) => t?.completed).length;
-  const isAllCompleted = safeTasks.length > 0 && completedCount === safeTasks.length;
-  const urgentCount = safeTasks.filter((t) => t?.priority === 'urgent' && !t?.completed).length;
-  const breachedTasks = safeTasks.filter((t) => !t?.completed && evaluateTaskTimeStatus(t).isOverdue);
+  const baseTasksForStats = allGroupTasks && allGroupTasks.length > 0 ? allGroupTasks : safeTasks;
+  const completedCount = baseTasksForStats.filter((t) => t?.completed || t?.approvalStatus === 'approved').length;
+  const totalCount = baseTasksForStats.length;
+  const isAllApproved = totalCount > 0 && baseTasksForStats.every((t) => t.approvalStatus === 'approved');
+  const percentage = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+  const breachedTasks = baseTasksForStats.filter((t) => !t?.completed && evaluateTaskTimeStatus(t).isOverdue);
   const breachedCount = breachedTasks.length;
-  const percentage = safeTasks.length > 0 ? Math.round((completedCount / safeTasks.length) * 100) : 0;
 
-  // Subtasks total count across tasks in this group
-  const totalSubTasks = safeTasks.reduce((acc, t) => acc + (t.subTasks ? t.subTasks.length : 0), 0);
-  const doneSubTasks = safeTasks.reduce(
-    (acc, t) => acc + (t.subTasks ? t.subTasks.filter((s) => s.isDone).length : 0),
-    0
-  );
+  const currentDept = safeTasks[0]?.department || 'General Operations';
+  const responderName = currentUser?.name || 'Staff Responder';
 
-  // Time window detection
-  const timeWindows = safeTasks
-    .map((t) => (t.startTime && t.endTime ? `${t.startTime} – ${t.endTime}` : t.deadline || null))
-    .filter(Boolean);
-  const primaryTimeWindow = timeWindows.length > 0 ? timeWindows[0] : 'Scheduled Daily';
+  const shiftSuggestion = HEADER_TIME_SUGGESTIONS[resolvedHeaderName];
+  const shiftTiming = shiftSuggestion
+    ? `${shiftSuggestion.start} – ${shiftSuggestion.end}`
+    : safeTasks[0]?.startTime
+    ? `${safeTasks[0].startTime} – ${safeTasks[0].endTime || safeTasks[0].deadline || ''}`
+    : null;
 
-  const getHeaderIcon = (name: string) => {
-    if (name.includes('Kitchen')) return <Utensils className="w-5 h-5" />;
-    if (name.includes('Bar')) return <Coffee className="w-5 h-5" />;
-    if (name.includes('Housekeeping')) return <Sparkles className="w-5 h-5" />;
-    if (name.includes('Service')) return <ConciergeBell className="w-5 h-5" />;
-    if (name.includes('Cashier')) return <CreditCard className="w-5 h-5" />;
-    return <Layers className="w-5 h-5" />;
+  // Handle staff form submission with Google Forms validation & instant Auto-Reset
+  const handleSubmitForm = () => {
+    setValidationError(null);
+
+    // 1. Check if any tasks have missing mandatory photos
+    const missingPhotoTasks = safeTasks.filter((t) => {
+      const isReq = Boolean(t.isPhotoMandatory);
+      const hasPhoto = Boolean(t.media && t.media.some((m) => m.type === 'photo'));
+      return t.completed && isReq && !hasPhoto;
+    });
+
+    if (missingPhotoTasks.length > 0) {
+      setValidationError(
+        `* Required photo proof missing for "${missingPhotoTasks[0].title}". Please attach photo proof before submitting.`
+      );
+      const el = document.getElementById(`task-item-${missingPhotoTasks[0].id}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('ring-4', 'ring-red-500');
+        setTimeout(() => el.classList.remove('ring-4', 'ring-red-500'), 3000);
+      }
+      return;
+    }
+
+    if (onSubmitChecklist) {
+      onSubmitChecklist(resolvedHeaderName);
+      setJustSubmitted(true);
+      setTimeout(() => setJustSubmitted(false), 8000);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
-
-  const getHeaderTheme = (name: string) => {
-    if (name.includes('Kitchen')) {
-      return {
-        badge: isLightMode ? 'bg-orange-100 text-orange-950 border-orange-300' : 'bg-orange-950/70 text-orange-300 border-orange-700',
-        accent: 'text-orange-500',
-        border: 'border-orange-500/40',
-      };
-    }
-    if (name.includes('Bar')) {
-      return {
-        badge: isLightMode ? 'bg-amber-100 text-amber-950 border-amber-300' : 'bg-amber-950/70 text-amber-300 border-amber-700',
-        accent: 'text-amber-500',
-        border: 'border-amber-500/40',
-      };
-    }
-    if (name.includes('Cashier')) {
-      return {
-        badge: isLightMode ? 'bg-emerald-100 text-emerald-950 border-emerald-300' : 'bg-emerald-950/70 text-emerald-300 border-emerald-700',
-        accent: 'text-emerald-500',
-        border: 'border-emerald-500/40',
-      };
-    }
-    if (name.includes('Housekeeping')) {
-      return {
-        badge: isLightMode ? 'bg-cyan-100 text-cyan-950 border-cyan-300' : 'bg-cyan-950/70 text-cyan-300 border-cyan-700',
-        accent: 'text-cyan-500',
-        border: 'border-cyan-500/40',
-      };
-    }
-    if (name.includes('Service')) {
-      return {
-        badge: isLightMode ? 'bg-purple-100 text-purple-950 border-purple-300' : 'bg-purple-950/70 text-purple-300 border-purple-700',
-        accent: 'text-purple-500',
-        border: 'border-purple-500/40',
-      };
-    }
-    return {
-      badge: isLightMode ? 'bg-zinc-200 text-zinc-900 border-zinc-300' : 'bg-zinc-800 text-zinc-200 border-zinc-700',
-      accent: 'text-zinc-400',
-      border: 'border-zinc-700',
-    };
-  };
-
-  const theme = getHeaderTheme(resolvedHeaderName);
 
   return (
-    <section
+    <div
       id={`checklist-group-${resolvedHeaderName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
-      className={`flex flex-col p-3.5 sm:p-5 transition-all rounded-sm border-2 shadow-md ${
-        isLightMode ? 'bg-white border-zinc-300' : 'bg-zinc-950 border-zinc-800'
-      }`}
+      className="max-w-3xl mx-auto w-full mb-6 space-y-4"
     >
-      {/* Section Header */}
+      {/* 1. Google Form Signature Single Global Header Card */}
       <div
-        className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 sm:pb-4 border-b ${
-          isLightMode ? 'border-zinc-200' : 'border-zinc-800'
+        className={`relative overflow-hidden rounded-lg border shadow-xs transition-all ${
+          isLightMode ? 'bg-white border-zinc-200' : 'bg-[#1a231e] border-zinc-800'
         }`}
       >
-        <div className="flex items-start sm:items-center gap-3">
-          <div className={`p-2 sm:p-2.5 ${theme.badge} border flex-shrink-0 font-black shadow-sm`}>
-            {getHeaderIcon(resolvedHeaderName)}
-          </div>
+        {/* Signature Google Form Top Purple Bar */}
+        <div className="h-2.5 sm:h-3 w-full bg-[#673ab7] rounded-t-lg" />
 
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
+        {/* Single Global Overdue Warning Banner at the very top of the screen */}
+        {breachedCount > 0 && (
+          <div className="mx-5 sm:mx-7 mt-4 p-3.5 bg-red-600 text-white rounded-lg border-2 border-red-400 shadow-md flex items-center justify-between gap-3 animate-pulse">
+            <div className="flex items-center gap-2.5">
+              <AlertCircle className="w-5 h-5 shrink-0 stroke-[2.5]" />
+              <div>
+                <div className="text-xs sm:text-sm font-black uppercase tracking-tight">
+                  🚨 TIME BREACH WARNING: SCHEDULED TIME CROSSED ({breachedCount} Overdue {breachedCount > 1 ? 'Tasks' : 'Task'})
+                </div>
+                <p className="text-[11px] text-red-100 font-medium mt-0.5">
+                  This checklist was scheduled for {shiftTiming || 'this shift window'} and has exceeded its allotted time. Please complete and submit now.
+                </p>
+              </div>
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 bg-black/40 text-white rounded-xs shrink-0">
+              Overdue
+            </span>
+          </div>
+        )}
+
+        {/* Submission Feedback Banner (Direct Final Save & Auto-reset confirmation) */}
+        {justSubmitted && (
+          <div className="mx-5 mt-4 p-3.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 rounded-lg text-emerald-900 dark:text-emerald-200 text-xs font-semibold flex items-center justify-between animate-in fade-in slide-in-from-top-2 duration-300 shadow-xs">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 stroke-[2.5]" />
+              <span>
+                ✓ Checklist finalized & saved directly to Master Task Register! Auto-reset: Brand new empty form ready below for next entry.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setJustSubmitted(false)}
+              className="text-emerald-700 hover:text-emerald-900 dark:hover:text-white cursor-pointer p-1"
+              aria-label="Dismiss banner"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        <div className="p-3.5 sm:p-5 space-y-2.5">
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+            <div className="space-y-1.5 flex-1 min-w-0">
               {isRenaming ? (
                 <div className="flex items-center gap-1.5 py-0.5">
                   <input
                     type="text"
                     value={renameDraft}
                     onChange={(e) => setRenameDraft(e.target.value)}
-                    className={`px-2 py-1 text-sm font-black uppercase tracking-tight border-2 outline-none ${
-                      isLightMode ? 'bg-white border-zinc-950 text-black' : 'bg-black border-white text-white'
-                    }`}
+                    className="px-3 py-1.5 text-lg font-bold border-2 border-[#673ab7] rounded-md outline-none bg-white text-zinc-950"
                     placeholder="Checklist title..."
                     autoFocus
                   />
@@ -195,7 +219,7 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
                       }
                       setIsRenaming(false);
                     }}
-                    className="p-1.5 bg-emerald-600 hover:bg-emerald-500 text-white transition cursor-pointer"
+                    className="p-2 bg-[#673ab7] text-white rounded-md cursor-pointer hover:bg-[#58309e]"
                     title="Save name"
                   >
                     <Check className="w-4 h-4 stroke-[3]" />
@@ -206,204 +230,135 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
                       setRenameDraft(resolvedHeaderName);
                       setIsRenaming(false);
                     }}
-                    className="p-1.5 bg-zinc-700 hover:bg-zinc-600 text-white transition cursor-pointer"
+                    className="p-2 bg-zinc-200 text-zinc-800 rounded-md cursor-pointer hover:bg-zinc-300"
                     title="Cancel"
                   >
                     <X className="w-4 h-4 stroke-[3]" />
                   </button>
                 </div>
               ) : (
-                <div className="flex items-center gap-1.5">
-                  <h2
-                    className={`text-lg sm:text-2xl font-black uppercase tracking-tight ${
-                      isLightMode ? 'text-zinc-950' : 'text-white'
-                    }`}
-                  >
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-xl sm:text-2xl font-bold text-zinc-900 dark:text-zinc-100 tracking-tight">
                     {resolvedHeaderName}
                   </h2>
-                  {onRenameChecklist && (
+                  {isAdmin && onRenameChecklist && (
                     <button
                       type="button"
                       onClick={() => {
                         setRenameDraft(resolvedHeaderName);
                         setIsRenaming(true);
                       }}
-                      className={`p-1 transition cursor-pointer opacity-60 hover:opacity-100 ${
-                        isLightMode ? 'text-zinc-600 hover:text-black' : 'text-zinc-400 hover:text-white'
-                      }`}
-                      title="Rename this checklist"
+                      className="p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 cursor-pointer"
+                      title="Rename checklist"
                     >
                       <Edit2 className="w-3.5 h-3.5" />
                     </button>
                   )}
                 </div>
               )}
-              <span className={`px-2 py-0.5 text-[10px] sm:text-xs font-black uppercase tracking-wider border ${theme.badge}`}>
-                {completedCount}/{safeTasks.length} Tasks Done ({percentage}%)
-              </span>
-              {breachedCount > 0 && (
-                <span className="px-2 py-0.5 text-[10px] font-black uppercase bg-red-600 text-white animate-pulse flex items-center gap-1 shadow">
-                  <AlertCircle className="w-3 h-3 stroke-[3]" />
-                  🚨 {breachedCount} Time Breach!
-                </span>
-              )}
-              {totalSubTasks > 0 && (
-                <span className="px-2 py-0.5 text-[10px] font-mono font-bold uppercase bg-blue-950 text-blue-300 border border-blue-800 flex items-center gap-1">
-                  <CheckSquare className="w-3 h-3" />
-                  {doneSubTasks}/{totalSubTasks} Sub-tasks
-                </span>
-              )}
-              {urgentCount > 0 && (
-                <span className="px-2 py-0.5 text-[10px] font-black uppercase bg-red-600 text-white animate-pulse flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3 stroke-[3]" />
-                  {urgentCount} Urgent
-                </span>
-              )}
-            </div>
 
-            {/* Time Window & Station Subtitle */}
-            <div className="flex flex-wrap items-center gap-2 mt-1">
-              <span className="text-[11px] font-mono font-bold text-amber-500 flex items-center gap-1">
-                <Clock className="w-3.5 h-3.5" />
-                <span>Timeline Window: {primaryTimeWindow}</span>
-              </span>
-              <span className="text-[10px] text-zinc-500 font-bold">•</span>
-              <span className={`text-[10px] sm:text-xs font-bold uppercase tracking-wider ${isLightMode ? 'text-zinc-600' : 'text-zinc-400'}`}>
-                PeakScale Verified SOP Checklist
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Action Buttons */}
-        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 self-start sm:self-auto">
-          {onAddTaskToHeader && (
-            <button
-              type="button"
-              onClick={() => onAddTaskToHeader(resolvedHeaderName)}
-              className={`text-[11px] sm:text-xs font-black uppercase tracking-tight px-3 py-1.5 transition flex items-center gap-1 cursor-pointer active:scale-95 min-h-[36px] ${
-                isLightMode
-                  ? 'bg-zinc-950 text-white hover:bg-zinc-800'
-                  : 'bg-white text-black hover:bg-zinc-200'
-              }`}
-            >
-              <Plus className="w-3.5 h-3.5 stroke-[3]" />
-              <span>+ Add Task</span>
-            </button>
-          )}
-
-          {onUpgradeChecklist && (
-            <button
-              type="button"
-              id={`upgrade-checklist-${resolvedHeaderName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
-              onClick={() => onUpgradeChecklist(resolvedHeaderName)}
-              className={`text-[11px] sm:text-xs font-black uppercase tracking-tight px-2.5 sm:px-3 py-1.5 transition flex items-center gap-1.5 cursor-pointer active:scale-95 min-h-[36px] border ${
-                isLightMode
-                  ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-300'
-                  : 'bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border-amber-800'
-              }`}
-              title={`Upgrade checklist "${resolvedHeaderName}" with more SOP checkpoints, media rules, or shift timings`}
-            >
-              <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
-              <span>Upgrade</span>
-            </button>
-          )}
-
-          {onDeleteChecklist && (
-            <button
-              type="button"
-              id={`delete-checklist-${resolvedHeaderName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
-              onClick={() => {
-                if (confirmDeleteChecklist) {
-                  onDeleteChecklist(resolvedHeaderName);
-                  setConfirmDeleteChecklist(false);
-                } else {
-                  setConfirmDeleteChecklist(true);
-                  setTimeout(() => setConfirmDeleteChecklist(false), 4000);
-                }
-              }}
-              className={`text-[11px] sm:text-xs font-black uppercase tracking-tight px-2.5 sm:px-3 py-1.5 transition flex items-center gap-1.5 cursor-pointer active:scale-95 min-h-[36px] border ${
-                confirmDeleteChecklist
-                  ? 'bg-red-600 text-white border-red-600 shadow-md animate-pulse'
-                  : isLightMode
-                  ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200 hover:border-red-400'
-                  : 'bg-red-950/40 hover:bg-red-900/60 text-red-400 border-red-900/60 hover:border-red-500'
-              }`}
-              title={
-                confirmDeleteChecklist
-                  ? 'Click again to permanently delete this entire checklist'
-                  : `Delete checklist "${resolvedHeaderName}"`
-              }
-            >
-              <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
-              <span>
-                {confirmDeleteChecklist
-                  ? safeTasks.length > 0
-                    ? `Confirm Delete (${safeTasks.length})?`
-                    : 'Confirm Delete Checklist?'
-                  : 'Delete Checklist'}
-              </span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setIsExpanded(!isExpanded)}
-            className={`p-1.5 transition cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center border ${
-              isLightMode
-                ? 'bg-zinc-100 hover:bg-zinc-200 text-zinc-600 hover:text-zinc-950 border-zinc-300'
-                : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border-zinc-800'
-            }`}
-            aria-label={isExpanded ? 'Collapse section' : 'Expand section'}
-          >
-            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-          </button>
-        </div>
-      </div>
-
-      {/* Group Progress Bar */}
-      <div className={`w-full h-1.5 my-2.5 overflow-hidden ${isLightMode ? 'bg-zinc-200' : 'bg-zinc-900'}`}>
-        <div
-          className={`h-full transition-all duration-300 ${
-            percentage === 100
-              ? 'bg-emerald-600'
-              : isLightMode
-              ? 'bg-zinc-950'
-              : 'bg-white'
-          }`}
-          style={{ width: `${percentage}%` }}
-        />
-      </div>
-
-      {/* Task Cards List */}
-      {isExpanded && (
-        <div className="pt-2 space-y-2.5 sm:space-y-3">
-          {/* Time Breach Alert Banner */}
-          {breachedCount > 0 && (
-            <div className="p-3 bg-red-950 text-red-100 border-2 border-red-600 shadow-md flex items-center justify-between gap-3 animate-pulse">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="w-5 h-5 text-red-400 shrink-0 stroke-[2.5]" />
-                <div>
-                  <span className="text-xs font-black uppercase text-red-300 block">
-                    🚨 {resolvedHeaderName} SLA Breach: {breachedCount} Task(s) Overdue!
+              {/* Subtitle / Department description & Shift Timings */}
+              <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
+                <span className="font-semibold">Live Shift Checklist • {currentDept} Station</span>
+                {shiftTiming && (
+                  <span className="inline-flex items-center gap-1 font-mono font-bold text-[#673ab7] dark:text-purple-300 bg-purple-100 dark:bg-purple-950/60 px-2 py-0.5 rounded">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Shift Timings: {shiftTiming}</span>
                   </span>
-                  <span className="text-[11px] text-zinc-300">
-                    Mention time has passed without completion. Escalated to Department & Master Register (Hemen Das).
-                  </span>
+                )}
+              </div>
+
+              {/* Single Global Instructions Card */}
+              <div
+                className={`mt-1.5 p-2 sm:p-2.5 rounded-md border text-xs leading-relaxed ${
+                  isLightMode
+                    ? 'bg-purple-50/70 border-purple-200 text-zinc-800'
+                    : 'bg-purple-950/30 border-purple-900/60 text-zinc-200'
+                }`}
+              >
+                <div className="font-black uppercase tracking-wider text-[10px] text-[#673ab7] dark:text-purple-300 mb-0.5 flex items-center gap-1.5">
+                  <span>📋 MARK RESPONSE INSTRUCTIONS</span>
                 </div>
+                <p className="text-zinc-600 dark:text-zinc-400 text-xs">
+                  Please answer each question below by selecting <strong>Yes</strong> (completed) or <strong>No</strong> (incomplete). Attach any required photo or video proofs to sub-tasks before submitting.
+                </p>
               </div>
             </div>
-          )}
 
+            {/* Admin Controls & Section Toggle */}
+            <div className="flex items-center gap-2 shrink-0">
+              {isAdmin && !isStaff && onAddTaskToHeader && (
+                <button
+                  type="button"
+                  onClick={() => onAddTaskToHeader(resolvedHeaderName)}
+                  className="px-2.5 py-1 text-xs font-semibold bg-zinc-100 hover:bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200 rounded cursor-pointer transition flex items-center gap-1"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Question</span>
+                </button>
+              )}
+
+              {isAdmin && !isStaff && onDeleteChecklist && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirmDeleteChecklist) {
+                      onDeleteChecklist(resolvedHeaderName);
+                      setConfirmDeleteChecklist(false);
+                    } else {
+                      setConfirmDeleteChecklist(true);
+                      setTimeout(() => setConfirmDeleteChecklist(false), 4000);
+                    }
+                  }}
+                  className={`p-1.5 rounded cursor-pointer text-xs font-bold transition ${
+                    confirmDeleteChecklist
+                      ? 'bg-red-600 text-white'
+                      : 'text-zinc-400 hover:text-red-500'
+                  }`}
+                  title={confirmDeleteChecklist ? 'Click again to confirm delete' : 'Delete checklist'}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-white rounded cursor-pointer"
+                aria-label={isExpanded ? 'Collapse' : 'Expand'}
+              >
+                {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+              </button>
+            </div>
+          </div>
+
+          {/* User Responder & Required Question Legend Bar */}
+          <div className="pt-2.5 border-t border-zinc-100 dark:border-zinc-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="text-zinc-500 dark:text-zinc-400">
+              Responding as: <strong className="text-zinc-900 dark:text-zinc-200">{responderName}</strong>
+            </div>
+
+            <div className="text-red-600 dark:text-red-400 font-medium">
+              * Indicates required question
+            </div>
+          </div>
+
+          {/* Overdue alert banner if breached */}
+          {breachedCount > 0 && (
+            <div className="p-2 bg-red-50 dark:bg-red-950/40 border border-red-300 dark:border-red-800 rounded-md text-red-800 dark:text-red-200 text-xs font-medium flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+              <span>⚠️ {breachedCount} task(s) in this checklist have crossed their scheduled deadline.</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 2. Questions List (Tasks in Google Form Cards) */}
+      {isExpanded && (
+        <div className="space-y-2 sm:space-y-2.5">
           {safeTasks.length === 0 ? (
-            <div
-              className={`py-6 text-center text-xs font-bold uppercase tracking-wider border border-dashed ${
-                isLightMode
-                  ? 'text-zinc-600 bg-zinc-50 border-zinc-300'
-                  : 'text-zinc-500 bg-zinc-900/40 border-zinc-800'
-              }`}
-            >
-              No tasks in {resolvedHeaderName} yet. Click "+ Add Task" to add tasks, or "Delete Checklist" above to remove this section.
+            <div className="p-6 text-center bg-white dark:bg-[#1a231e] rounded-lg border border-zinc-200 dark:border-zinc-800 text-zinc-500 text-sm">
+              No questions in this checklist.
             </div>
           ) : (
             <AnimatePresence mode="popLayout" initial={false}>
@@ -426,12 +381,87 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
                   onRejectTask={onRejectTask}
                   staffList={staffList}
                   isBlocked={blockedTaskId === task.id}
+                  isLocked={false}
                 />
               ))}
             </AnimatePresence>
           )}
+
+          {/* Validation Error Banner */}
+          {validationError && (
+            <div className="p-3 bg-red-50 dark:bg-red-950/60 border-2 border-red-500 rounded-lg text-red-700 dark:text-red-300 text-xs font-bold animate-in fade-in">
+              {validationError}
+            </div>
+          )}
+
+          {/* Bottom Spacer so content is never hidden behind the fixed bar */}
+          {safeTasks.length > 0 && isSingleChecklist && (
+            <div className="h-16 sm:h-20" aria-hidden="true" />
+          )}
+
+          {/* 3. Bottom Google Form Action Bar (Sticky / Fixed Submit Checklist Button) */}
+          {safeTasks.length > 0 && (
+            <div
+              id={`submit-action-bar-${resolvedHeaderName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
+              className={
+                isSingleChecklist
+                  ? "fixed bottom-[52px] sm:bottom-0 left-0 right-0 w-full z-45 sm:z-50 bg-white/95 dark:bg-[#1a231e]/95 backdrop-blur-md border-t-2 border-[#673ab7]/40 dark:border-purple-500/30 shadow-[0_-6px_25px_rgba(0,0,0,0.15)] dark:shadow-[0_-6px_25px_rgba(0,0,0,0.6)] py-2 sm:py-2.5 px-3 sm:px-6"
+                  : "sticky bottom-[52px] sm:bottom-0 z-40 bg-white/95 dark:bg-[#1a231e]/95 backdrop-blur-md rounded-lg border-2 border-[#673ab7]/30 dark:border-purple-500/30 shadow-[0_-4px_20px_rgba(0,0,0,0.12)] dark:shadow-[0_-4px_20px_rgba(0,0,0,0.5)] p-3 sm:p-4 flex flex-row items-center justify-between gap-3 mt-4"
+              }
+            >
+              <div className={isSingleChecklist ? "max-w-7xl mx-auto flex items-center justify-between gap-3 w-full" : "w-full flex items-center justify-between gap-3"}>
+                {/* Progress Summary */}
+                <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                  <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-purple-100 dark:bg-purple-950/90 flex items-center justify-center text-[#673ab7] dark:text-purple-300 font-black text-xs shrink-0 border border-purple-200 dark:border-purple-800">
+                    {percentage}%
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-bold text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 leading-tight">
+                      {completedCount} of {safeTasks.length} answered
+                    </div>
+                    <div className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate hidden sm:block">
+                      {resolvedHeaderName} • Responding as {responderName}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* Google Forms Clear Form Button */}
+                  {safeTasks.some((t) => t.completed) && onToggleTask && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        safeTasks.forEach((t) => {
+                          if (t.completed) {
+                            onToggleTask(t.id);
+                          }
+                        });
+                      }}
+                      className="text-xs font-semibold text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 cursor-pointer px-2.5 py-1.5 transition hidden sm:inline-block"
+                    >
+                      Clear form
+                    </button>
+                  )}
+
+                  {/* Google Forms Prominent Submit Checklist Button */}
+                  {onSubmitChecklist && (
+                    <button
+                      type="button"
+                      id={`submit-checklist-btn-${resolvedHeaderName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
+                      onClick={handleSubmitForm}
+                      className="px-5 sm:px-8 py-2 sm:py-2.5 bg-[#673ab7] hover:bg-[#58309e] text-white text-xs sm:text-sm font-bold uppercase tracking-wide rounded-md shadow-md hover:shadow-lg transition-all cursor-pointer flex items-center gap-2 active:scale-95 shrink-0"
+                    >
+                      <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                      <span>Submit Checklist</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
-    </section>
+    </div>
   );
 };

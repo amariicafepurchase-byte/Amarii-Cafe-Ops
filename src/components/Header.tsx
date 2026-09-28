@@ -70,8 +70,6 @@ interface HeaderProps {
   onTriggerQueueSync?: () => void;
   onOpenDiagnostics?: () => void;
   firestoreConnectionState?: 'connected' | 'connecting' | 'error' | 'offline';
-  onOpenAdminApprovals?: () => void;
-  pendingApprovalCount?: number;
   onOpenTaskRegister?: () => void;
 }
 
@@ -103,8 +101,6 @@ export const Header: React.FC<HeaderProps> = ({
   onTriggerQueueSync,
   onOpenDiagnostics,
   firestoreConnectionState = 'connected',
-  onOpenAdminApprovals,
-  pendingApprovalCount = 0,
   onOpenTaskRegister,
 }) => {
   const { theme, isLightMode, toggleTheme } = useTheme();
@@ -504,31 +500,6 @@ export const Header: React.FC<HeaderProps> = ({
             )}
           </button>
 
-          {/* Admin Task Approval Queue Button (Hemen Das / Owner Only) */}
-          {(isAdmin || isManager) && onOpenAdminApprovals && (
-            <button
-              type="button"
-              id="header-admin-approvals-btn"
-              onClick={onOpenAdminApprovals}
-              className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 font-black uppercase text-xs tracking-tight transition shadow-xs cursor-pointer border rounded-xs flex-shrink-0 relative ${
-                (pendingApprovalCount || 0) > 0
-                  ? 'bg-amber-500 hover:bg-amber-400 text-black border-amber-600 animate-pulse'
-                  : isLightMode
-                  ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-950 border-emerald-300'
-                  : 'bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-300 border-emerald-800'
-              }`}
-              title="Inspect Photo Proofs & Approve Staff Tasks"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 stroke-[2.5]" />
-              <span>Admin Approvals</span>
-              {(pendingApprovalCount || 0) > 0 && (
-                <span className="px-1.5 py-0.2 bg-red-600 text-white text-[10px] font-mono font-black rounded-full ml-0.5">
-                  {pendingApprovalCount}
-                </span>
-              )}
-            </button>
-          )}
-
           {/* Master Task Register & Ledger Button (Hemen Das & Managers) */}
           {(isAdmin || isManager) && onOpenTaskRegister && (
             <button
@@ -634,19 +605,6 @@ export const Header: React.FC<HeaderProps> = ({
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>All Urgent Cleared</span>
-              </div>
-            )}
-
-            {pendingCount > 0 && (
-              <div
-                className={`flex items-center gap-1 border px-2.5 py-1 sm:py-1.5 ${
-                  isLightMode
-                    ? 'bg-amber-100 text-amber-900 border-amber-300 font-black'
-                    : 'bg-zinc-900 text-zinc-300 border-zinc-800'
-                }`}
-              >
-                <Clock className="w-3.5 h-3.5" />
-                <span>{pendingCount} Pending Approval</span>
               </div>
             )}
           </div>

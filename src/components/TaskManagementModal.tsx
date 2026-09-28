@@ -603,11 +603,11 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                         No tasks found matching your search.
                       </div>
                     ) : (
-                      filteredTasks.map((task) => {
+                      filteredTasks.map((task, taskIdx) => {
                         const isSelected = selectedTaskIds.includes(task.id);
                         return (
                           <div
-                            key={task.id}
+                            key={`task-mgmt-${task.id || 'no-id'}-${taskIdx}`}
                             className={`grid grid-cols-[40px_1.5fr_2fr_1fr_1.5fr_120px] gap-3 p-3 items-center border-b last:border-b-0 transition ${
                               isSelected
                                 ? isLightMode

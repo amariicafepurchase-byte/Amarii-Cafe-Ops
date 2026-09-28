@@ -27,6 +27,8 @@ import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { LiveCameraModal } from './LiveCameraModal';
 import { evaluateTaskTimeStatus } from '../utils/timeEvaluation';
+import { compressImage } from '../utils/imageCompressor';
+import { triggerHaptic } from '../utils/haptics';
 
 interface TaskCardProps {
   task: TaskItem;
@@ -45,6 +47,7 @@ interface TaskCardProps {
   onRejectTask?: (taskId: string, reason: string) => void;
   staffList?: StaffMember[];
   isBlocked?: boolean;
+  isLocked?: boolean;
 }
 
 export const TaskCard: React.FC<TaskCardProps> = ({
@@ -64,12 +67,20 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   onRejectTask,
   staffList = [],
   isBlocked = false,
+  isLocked: isExplicitLocked = false,
 }) => {
   const { isLightMode } = useTheme();
-  const { canDeleteTask, canEditTask, isAdmin } = useAuth();
+  const { canDeleteTask, canEditTask, isAdmin, isStaff } = useAuth();
   const isDeleteAllowed = Boolean(canDeleteTask);
   const isUrgent = task.priority === 'urgent';
   const isPending = task.priority === 'pending';
+
+  // Lock status: only finalized permanent archive records or explicitly locked tasks cannot be edited
+  const isLocked = Boolean(
+    isExplicitLocked ||
+    Boolean(task.id?.startsWith('finalized-')) ||
+    Boolean(task.id?.startsWith('submitted-'))
+  );
 
   // Compute live real-time schedule & breach status
   const timeStatus = evaluateTaskTimeStatus(task);
@@ -114,11 +125,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   // Subtasks collapsed/expanded state
   const [isSubTasksExpanded, setIsSubTasksExpanded] = useState<boolean>(true);
 
-  // Hidden file input refs for video attachment (strictly video format)
-  const videoInputRef = useRef<HTMLInputElement>(null);
-  const subTaskVideoInputRef = useRef<HTMLInputElement>(null);
-  const [activeSubTaskIdForMedia, setActiveSubTaskIdForMedia] = useState<string | null>(null);
-
   // Sub-task inline note drafting state
   const [editingSubTaskIdForNote, setEditingSubTaskIdForNote] = useState<string | null>(null);
   const [subTaskNoteDraft, setSubTaskNoteDraft] = useState<string>('');
@@ -129,6 +135,9 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   // Live camera modal state
   const [isLiveCameraOpen, setIsLiveCameraOpen] = useState<boolean>(false);
   const [liveCameraSubTaskId, setLiveCameraSubTaskId] = useState<string | null>(null);
+  const [isCardAdminPinPromptOpen, setIsCardAdminPinPromptOpen] = useState<boolean>(false);
+  const [cardAdminPin, setCardAdminPin] = useState<string>('');
+  const [cardPinError, setCardPinError] = useState<string>('');
 
   const handleLiveCameraCapture = (capturedMedia: TaskMedia) => {
     if (liveCameraSubTaskId) {
@@ -208,9 +217,9 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   const handleSubTaskClick = (e: React.MouseEvent, sub: SubTaskItem) => {
     e.stopPropagation();
 
-    // If task is already completed/submitted, prevent changing subtasks (locked)
-    if (task.completed) {
-      setLocalBlockMsg('🔒 Task is already submitted and locked. It cannot be modified or undone.');
+    // If record is finalized, prevent changing subtasks (locked)
+    if (isLocked) {
+      setLocalBlockMsg('🔒 This record is finalized. It cannot be modified.');
       setTimeout(() => setLocalBlockMsg(null), 4000);
       return;
     }
@@ -223,16 +232,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         setLocalBlockMsg(`📷 Photo Proof Required! Please snap a photo before marking "${sub.title}" done.`);
         setLiveCameraSubTaskId(sub.id);
         setIsLiveCameraOpen(true);
-        setTimeout(() => setLocalBlockMsg(null), 6000);
-        return;
-      }
-
-      const isReqVideo = Boolean(sub.isVideoMandatory || sub.mandatoryMedia === 'video');
-      const hasSubVideo = Boolean(sub.media && sub.media.some((m) => m.type === 'video'));
-      if (isReqVideo && !hasSubVideo) {
-        setLocalBlockMsg(`🎥 Video Proof Required for "${sub.title}"! Attach video below.`);
-        setActiveSubTaskIdForMedia(sub.id);
-        subTaskVideoInputRef.current?.click();
         setTimeout(() => setLocalBlockMsg(null), 6000);
         return;
       }
@@ -252,63 +251,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     if (onToggleSubTask) {
       onToggleSubTask(task.id, sub.id);
     }
-  };
-
-  // Handle direct video attachment to parent task (Strictly Video format)
-  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    Array.from(files).forEach((file: File) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const url = event.target?.result as string;
-        const newMedia: TaskMedia = {
-          id: `media-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          type: 'video',
-          url,
-          name: file.name,
-          size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
-          uploadedAt: new Date().toISOString(),
-        };
-        if (onAddMediaToTask) {
-          onAddMediaToTask(task.id, newMedia);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
-
-    if (videoInputRef.current) videoInputRef.current.value = '';
-  };
-
-  // Handle direct video attachment for a nested subtask (Strictly Video format)
-  const handleSubTaskVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0 || !activeSubTaskIdForMedia) return;
-
-    Array.from(files).forEach((file: File) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const url = event.target?.result as string;
-        const newMedia: TaskMedia = {
-          id: `media-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          type: 'video',
-          url,
-          name: file.name,
-          size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
-          uploadedAt: new Date().toISOString(),
-        };
-        if (onAddSubTaskMedia) {
-          onAddSubTaskMedia(task.id, activeSubTaskIdForMedia, newMedia);
-        } else if (onAddMediaToTask) {
-          onAddMediaToTask(task.id, newMedia);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
-
-    if (subTaskVideoInputRef.current) subTaskVideoInputRef.current.value = '';
-    setActiveSubTaskIdForMedia(null);
   };
 
   const handleToggleSubTaskNoteEditor = (sub: SubTaskItem) => {
@@ -336,14 +278,20 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     setIsEditingNote(false);
   };
 
-  // Handle clicking parent checkbox with pre-flight check
-  const handleParentToggleClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  // Handle clicking parent checkbox/radio with pre-flight check
+  const handleParentToggleClick = (e?: React.MouseEvent | React.SyntheticEvent) => {
+    if (e && e.stopPropagation) {
+      e.stopPropagation();
+    }
 
     // Prevent undoing / reopening submitted tasks
     if (task.completed) {
-      setLocalBlockMsg('🔒 Task is submitted and locked. It cannot be reopened or undone.');
-      setTimeout(() => setLocalBlockMsg(null), 5000);
+      if (isLocked) {
+        setLocalBlockMsg('🔒 Task is submitted and locked. It cannot be reopened or undone.');
+        setTimeout(() => setLocalBlockMsg(null), 5000);
+        return;
+      }
+      onToggle(task.id);
       return;
     }
 
@@ -415,293 +363,158 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         layout: { duration: 0.2, ease: 'easeOut' },
       }}
       id={`task-item-${task.id}`}
-      className={`group relative p-3.5 sm:p-4 transition-colors duration-150 rounded-sm border-2 ${
-        isTimeBreached && !task.completed
+      className={`group relative p-2 sm:p-2.5 transition-all duration-150 rounded-md border shadow-xs hover:shadow-sm focus-within:border-l-3 focus-within:border-l-[#673ab7] ${
+        task.completed
           ? isLightMode
-            ? 'bg-red-50/95 border-red-600 shadow-md ring-2 ring-red-500/50'
-            : 'bg-red-950/40 border-red-600 shadow-lg ring-2 ring-red-500/40'
-          : isUrgent
-          ? task.completed
-            ? isLightMode
-              ? 'bg-red-50/40 opacity-50 border-red-200'
-              : 'bg-zinc-900/60 opacity-50 border-zinc-700'
-            : isLightMode
-            ? 'bg-red-50/90 border-red-600 shadow-sm'
-            : 'bg-zinc-950 border-red-500 shadow-md'
-          : isPending
-          ? task.completed
-            ? isLightMode
-              ? 'bg-zinc-100 opacity-50 border-zinc-300'
-              : 'bg-zinc-900/50 opacity-50 border-zinc-800'
-            : isLightMode
-            ? 'bg-amber-50/70 border-amber-400'
-            : 'bg-zinc-900/80 border-zinc-700'
-          : task.completed
-          ? isLightMode
-            ? 'bg-zinc-100 opacity-50 border-zinc-300'
-            : 'bg-zinc-900/40 opacity-50 border-zinc-800'
+            ? 'bg-zinc-50/90 border-zinc-200'
+            : 'bg-zinc-900/60 border-zinc-800'
           : isLightMode
-          ? 'bg-white hover:bg-zinc-50 border-zinc-300 hover:border-zinc-400 shadow-xs'
-          : 'bg-zinc-900/95 hover:bg-zinc-900 border-zinc-800 hover:border-zinc-700'
+          ? 'bg-white hover:border-zinc-300 border-zinc-200'
+          : 'bg-[#1a231e] hover:border-zinc-700 border-zinc-800'
       }`}
     >
-      {/* Hidden File Inputs for Video Upload (Strictly Video Format) */}
-      <input
-        ref={videoInputRef}
-        type="file"
-        accept="video/*"
-        onChange={handleVideoUpload}
-        className="hidden"
-      />
-      <input
-        ref={subTaskVideoInputRef}
-        type="file"
-        accept="video/*"
-        onChange={handleSubTaskVideoUpload}
-        className="hidden"
-      />
-
-      <div className="flex items-start gap-3 sm:gap-3.5">
-        {/* Large Touch-Friendly Checkbox for Parent Task */}
-        <button
-          type="button"
-          id={`checkbox-${task.id}`}
-          aria-label={task.completed ? 'Mark uncompleted' : 'Mark completed'}
-          className={`mt-0.5 flex-shrink-0 w-7 h-7 sm:w-6 sm:h-6 border-2 flex items-center justify-center transition-colors cursor-pointer active:scale-95 ${
-            task.completed
-              ? isLightMode
-                ? 'bg-zinc-950 border-zinc-950 text-white'
-                : 'bg-white border-white text-black'
-              : isUrgent
-              ? isLightMode
-                ? 'border-red-600 hover:bg-red-600 hover:text-white text-transparent'
-                : 'border-red-500 hover:bg-red-500 hover:text-black text-transparent'
-              : isLightMode
-              ? 'border-zinc-500 hover:border-zinc-900 text-transparent'
-              : 'border-zinc-400 hover:border-white text-transparent'
-          }`}
-          onClick={handleParentToggleClick}
-          title={
-            task.completed
-              ? 'Click to uncheck checklist'
-              : hasSubTasks && !allSubTasksDone
-              ? 'Complete all sub-tasks first'
-              : 'Click to mark checklist complete'
-          }
-        >
-          {task.completed && <Check className="w-4 h-4 stroke-[3]" />}
-        </button>
-
+      <div className="flex items-start gap-2">
         {/* Task Info & Actions */}
         <div className="flex-1 min-w-0">
-          {/* Top Badges Bar: Task # Index, Group Header, Timeline Window, Priority */}
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-1.5">
-            {/* Task Index Sequence Number */}
-            <span
-              className={`text-[9px] sm:text-[10px] font-mono font-black px-1.5 py-0.5 border flex items-center gap-0.5 rounded-xs ${
-                task.completed
-                  ? isLightMode
-                    ? 'bg-zinc-200 text-zinc-600 border-zinc-300'
-                    : 'bg-zinc-800 text-zinc-400 border-zinc-700'
-                  : isLightMode
-                  ? 'bg-zinc-950 text-white border-zinc-950'
-                  : 'bg-white text-black border-white'
-              }`}
-            >
-              #{index + 1}
-            </span>
-
-            {/* Checklist Group Header Badge */}
-            {task.checklistHeader && (
-              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-2 py-0.5 bg-blue-600 text-white flex items-center gap-1 rounded-xs">
-                <Tag className="w-3 h-3 stroke-[2.5]" />
-                <span>{task.checklistHeader}</span>
-              </span>
-            )}
-
-            {/* Department Badge */}
-            {task.department && (
-              <span className={`text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 rounded-xs ${deptStyle.badge}`}>
-                {task.department}
-              </span>
-            )}
-
-            {/* Priority Badge */}
-            {isUrgent && (
-              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 bg-red-600 text-white flex items-center gap-1 rounded-xs">
-                <AlertCircle className="w-3 h-3 stroke-[3]" />
-                URGENT
-              </span>
-            )}
-
-            {/* Photo Mandatory Badge */}
-            {isTaskPhotoRequired && (
-              <span
-                className={`text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 border flex items-center gap-1 rounded-xs ${
-                  hasTaskPhoto
-                    ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
-                    : 'bg-emerald-950 text-emerald-300 border-emerald-500 animate-pulse'
-                }`}
-                title={hasTaskPhoto ? 'Photo proof attached' : 'Mandatory photo proof required!'}
-              >
-                <Camera className="w-3 h-3" />
-                <span>{hasTaskPhoto ? 'Photo ✓' : '📸 Photo Req'}</span>
-              </span>
-            )}
-
-            {/* Awaiting Approval Status Badge specifically highlighting Hemen Das Photo Quality Check */}
-            {(task.approvalStatus === 'pending' || (task.priority === 'pending' && !task.completed)) && (
-              <span
-                id={`awaiting-approval-badge-${task.id}`}
-                className={`text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-2 py-0.5 border flex items-center gap-1.5 shadow-xs animate-pulse rounded-xs ${
-                  isLightMode
-                    ? 'bg-amber-100 text-amber-950 border-amber-400'
-                    : 'bg-amber-950/90 text-amber-300 border-amber-500'
-                }`}
-                title="Awaiting photo quality check & approval by Hemen Das"
-              >
-                <Clock className="w-3 h-3 text-amber-600 dark:text-amber-400 stroke-[2.5]" />
-                <span>⏳ Awaiting Approval • Hemen Das Quality Check</span>
-              </span>
-            )}
-
-            {task.approvalStatus === 'rejected' && (
-              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 bg-red-600 text-white flex items-center gap-1 animate-pulse rounded-xs">
-                <AlertCircle className="w-3 h-3 stroke-[2.5]" />
-                ❌ REJECTED BY HEMEN DAS
-              </span>
-            )}
-
-            {task.approvalStatus === 'approved' && (
-              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 bg-emerald-600 text-white flex items-center gap-1 rounded-xs">
-                <Check className="w-3 h-3 stroke-[3]" />
-                ✓ APPROVED BY HEMEN DAS
-              </span>
-            )}
-
-            {/* Time Breach Alert Status Badge */}
-            {isTimeBreached && !task.completed && (
-              <span
-                id={`time-breach-badge-${task.id}`}
-                className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider px-2 py-0.5 bg-red-600 text-white flex items-center gap-1.5 shadow-md animate-pulse rounded-xs"
-                title="Task deadline crossed! Reported as department breach to Hemen Das."
-              >
-                <AlertCircle className="w-3 h-3 stroke-[3]" />
-                <span>{timeStatus.statusLabel}</span>
-              </span>
-            )}
-
-            {/* Timeline Window: Prominently displayed Start - End Time & Top Delete Button */}
-            <div className="ml-auto flex items-center gap-1.5">
-              <span
-                className={`text-[10px] sm:text-xs font-mono font-black uppercase px-2 py-0.5 border flex items-center gap-1 rounded-xs ${
-                  task.completed
-                    ? isLightMode
-                      ? 'bg-zinc-100 text-zinc-600 border-zinc-300'
-                      : 'bg-zinc-800 text-zinc-400 border-zinc-700'
-                    : isTimeBreached
-                    ? 'bg-red-600 text-white border-red-600 animate-pulse shadow-sm'
-                    : isLightMode
-                    ? 'bg-zinc-950 text-white border-zinc-950 shadow-xs'
-                    : 'bg-zinc-800 text-amber-300 border-amber-500/50'
-                }`}
-                title={`Mention Time window: ${task.startTime || 'Start'} to ${task.endTime || task.deadline || 'End'}`}
-              >
-                <Clock className="w-3 h-3 stroke-[2.5]" />
-                <span>
-                  {task.startTime ? `${task.startTime} – ${task.endTime || task.deadline}` : task.deadline || 'Anytime'}
+          {/* Question / Task Title (Google Form Minimalist Style) */}
+          <div className="flex items-start justify-between gap-1.5">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-baseline gap-1.5 flex-wrap">
+                <span className="font-mono text-[10px] sm:text-[11px] font-black text-[#673ab7] dark:text-purple-400 select-none">
+                  #{index + 1}
                 </span>
-              </span>
-
-              {/* Top Quick Delete Button for Admin and Manager */}
-              {isDeleteAllowed && (
-                <button
-                  type="button"
-                  id={`top-delete-task-${task.id}`}
-                  onClick={handleDeleteTaskCard}
-                  className={`p-1 border transition cursor-pointer active:scale-90 flex items-center justify-center rounded-xs ${
-                    isLightMode
-                      ? 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200 hover:border-red-400'
-                      : 'bg-red-950/50 hover:bg-red-900/80 text-red-400 border-red-900/70 hover:border-red-600'
-                  } ${confirmDelete ? 'w-auto px-2 border-red-500' : 'w-7'}`}
-                  title={confirmDelete ? 'Click again to confirm delete' : `Delete checklist "${task.title}"`}
-                  aria-label={`Delete task ${task.title}`}
+                <p
+                  onClick={handleParentToggleClick}
+                  className={`font-bold text-xs sm:text-[13px] leading-snug uppercase tracking-tight cursor-pointer ${
+                    task.completed
+                      ? isLightMode
+                        ? 'line-through text-zinc-400'
+                        : 'line-through opacity-70 text-zinc-400'
+                      : isLightMode
+                      ? 'text-zinc-950 hover:text-black'
+                      : 'text-white hover:text-zinc-200'
+                  }`}
                 >
-                  {confirmDelete ? (
-                    <span className="text-[10px] font-black uppercase whitespace-nowrap">Confirm?</span>
-                  ) : (
-                    <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
-                  )}
-                </button>
+                  {task.title}
+                </p>
+                {isTaskPhotoRequired && (
+                  <span
+                    className={`text-[8px] font-black uppercase tracking-wider px-1 py-0.2 rounded border inline-flex items-center gap-0.5 ${
+                      hasTaskPhoto
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300'
+                        : 'bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-950/40 dark:text-amber-300'
+                    }`}
+                    title={hasTaskPhoto ? 'Photo proof attached' : 'Mandatory photo proof required'}
+                  >
+                    <Camera className="w-2.5 h-2.5" />
+                    <span>{hasTaskPhoto ? 'Photo ✓' : 'Photo Required'}</span>
+                  </span>
+                )}
+              </div>
+
+              {/* Details if present */}
+              {task.details && task.details !== task.title && (
+                <p
+                  className={`text-[10px] sm:text-[11px] mt-0.5 leading-tight ${
+                    task.completed
+                      ? 'line-through text-zinc-400'
+                      : isLightMode
+                      ? 'text-zinc-500'
+                      : 'text-zinc-400'
+                  }`}
+                >
+                  {task.details}
+                </p>
               )}
             </div>
-          </div>
-
-          {/* Title */}
-          <div className="flex items-center justify-between gap-2">
-            <p
-              onClick={handleParentToggleClick}
-              className={`font-black text-sm sm:text-base leading-snug uppercase tracking-tight cursor-pointer ${
-                task.completed
-                  ? isLightMode
-                    ? 'line-through text-zinc-400'
-                    : 'line-through opacity-70 text-white'
-                  : isLightMode
-                  ? 'text-zinc-950 hover:text-black'
-                  : 'text-white hover:text-zinc-200'
-              }`}
-            >
-              {task.title}
-            </p>
 
             {hasSubTasks && (
               <button
                 type="button"
                 onClick={() => setIsSubTasksExpanded(!isSubTasksExpanded)}
-                className="p-1 text-zinc-400 hover:text-white transition cursor-pointer flex-shrink-0"
+                className="p-0.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-white transition cursor-pointer shrink-0"
                 title={isSubTasksExpanded ? 'Collapse sub-tasks' : 'Expand sub-tasks'}
               >
-                {isSubTasksExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                {isSubTasksExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
               </button>
             )}
           </div>
 
-          {/* Details */}
-          {task.details && task.details !== task.title && (
-            <p
-              className={`text-xs sm:text-sm mt-1 leading-relaxed ${
-                task.completed
-                  ? isLightMode
-                    ? 'line-through text-zinc-400'
-                    : 'line-through text-zinc-600'
-                  : isLightMode
-                  ? 'text-zinc-700 font-medium'
-                  : 'text-zinc-400 font-medium'
-              }`}
-            >
-              {task.details}
-            </p>
-          )}
+          {/* Google Form Yes / No Radio Options */}
+          <div className="mt-1 pt-1 border-t border-zinc-100 dark:border-zinc-800/60">
+            <div className="flex flex-row items-center gap-1.5 sm:gap-3">
+              {/* Yes Radio Option */}
+              <label
+                htmlFor={`task-radio-yes-${task.id}`}
+                className={`flex items-center gap-1.5 px-2 py-0.5 sm:py-1 rounded border text-[11px] sm:text-xs transition select-none ${
+                  isLocked
+                    ? 'cursor-not-allowed opacity-80'
+                    : 'cursor-pointer hover:border-[#673ab7]'
+                } ${
+                  task.completed
+                    ? 'bg-purple-50/80 dark:bg-purple-950/30 border-[#673ab7] shadow-xs'
+                    : isLightMode
+                    ? 'bg-white border-zinc-200'
+                    : 'bg-zinc-900 border-zinc-800'
+                }`}
+              >
+                <input
+                  type="radio"
+                  id={`task-radio-yes-${task.id}`}
+                  name={`task-radio-group-${task.id}`}
+                  checked={Boolean(task.completed)}
+                  disabled={isLocked}
+                  onChange={() => {
+                    if (!isLocked && !task.completed) {
+                      handleParentToggleClick();
+                    }
+                  }}
+                  className="w-3 h-3 accent-[#673ab7] text-[#673ab7] cursor-pointer disabled:cursor-not-allowed"
+                />
+                <span className={`font-semibold ${task.completed ? 'text-[#673ab7] dark:text-purple-300 font-bold' : 'text-zinc-700 dark:text-zinc-300'}`}>
+                  Yes (Completed)
+                </span>
+                {task.completed && (
+                  <span className="text-[8px] font-black uppercase text-emerald-600 bg-emerald-100 dark:bg-emerald-950/60 dark:text-emerald-400 px-1 rounded-full">
+                    ✓
+                  </span>
+                )}
+              </label>
 
-          {/* Time Breach Escalation Notice Banner */}
-          {isTimeBreached && !task.completed && (
-            <div className="mt-2 p-2.5 bg-red-950 text-red-100 text-xs font-bold border-2 border-red-600 shadow-md flex items-start justify-between gap-2 animate-pulse">
-              <div className="flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5 stroke-[2.5]" />
-                <div>
-                  <span className="font-black uppercase text-red-300 block">
-                    🚨 TIME BREACH: Scheduled Time Crossed!
-                  </span>
-                  <span className="text-red-100 mt-0.5 block">
-                    Task was scheduled for <strong>{timeStatus.timeDisplay}</strong> and was not completed on time.
-                  </span>
-                  <span className="text-[10px] text-amber-300 uppercase font-black tracking-wider block mt-1">
-                    ⚠️ Escalated to {task.department || 'Department'} Head & Master Audit Register (Hemen Das).
-                  </span>
-                </div>
-              </div>
+              {/* No Radio Option */}
+              <label
+                htmlFor={`task-radio-no-${task.id}`}
+                className={`flex items-center gap-1.5 px-2 py-0.5 sm:py-1 rounded border text-[11px] sm:text-xs transition select-none ${
+                  isLocked
+                    ? 'cursor-not-allowed opacity-80'
+                    : 'cursor-pointer hover:border-zinc-400'
+                } ${
+                  !task.completed
+                    ? 'bg-zinc-100 dark:bg-zinc-800/80 border-zinc-400 dark:border-zinc-600 shadow-xs'
+                    : isLightMode
+                    ? 'bg-white border-zinc-200'
+                    : 'bg-zinc-900 border-zinc-800'
+                }`}
+              >
+                <input
+                  type="radio"
+                  id={`task-radio-no-${task.id}`}
+                  name={`task-radio-group-${task.id}`}
+                  checked={!task.completed}
+                  disabled={isLocked}
+                  onChange={() => {
+                    if (!isLocked && task.completed) {
+                      handleParentToggleClick();
+                    }
+                  }}
+                  className="w-3 h-3 accent-[#673ab7] text-[#673ab7] cursor-pointer disabled:cursor-not-allowed"
+                />
+                <span className={`font-semibold ${!task.completed ? 'text-zinc-950 dark:text-white font-bold' : 'text-zinc-500 dark:text-zinc-400'}`}>
+                  No (Incomplete)
+                </span>
+              </label>
             </div>
-          )}
+          </div>
 
           {/* Rejection Notice Banner from Admin Hemen Das */}
           {task.rejectionReason && (
@@ -730,160 +543,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                   <Check className="w-3.5 h-3.5 stroke-[3]" />
                   <span>✓ Re-Approve</span>
                 </button>
-              )}
-            </div>
-          )}
-
-          {/* Awaiting Approval Notice Bar: Specifically highlights photo quality verification by Hemen Das */}
-          {((task.approvalStatus === 'pending') ||
-            (task.priority === 'pending' && !task.completed) ||
-            (task.completed && task.approvalStatus !== 'approved') ||
-            (hasMedia && task.approvalStatus !== 'approved')) &&
-            !task.rejectionReason && (
-            <div
-              id={`awaiting-approval-banner-${task.id}`}
-              className={`mt-2.5 p-2.5 border-2 rounded-xs space-y-2 shadow-xs ${
-                isLightMode
-                  ? 'bg-amber-50/95 border-amber-400 text-amber-950'
-                  : 'bg-amber-950/40 border-amber-600/80 text-amber-200'
-              }`}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="p-1.5 bg-amber-500 text-black rounded-xs flex-shrink-0">
-                    <Camera className="w-4 h-4 stroke-[2.5]" />
-                  </div>
-                  <div className="min-w-0">
-                    <span className="text-[10px] font-black uppercase tracking-wider block text-amber-600 dark:text-amber-400">
-                      Awaiting Approval • Photo Quality Check
-                    </span>
-                    <span className="text-[11px] font-medium block truncate">
-                      {task.submittedBy ? `Submitted by ${task.submittedBy}` : 'Staff submitted'} • Waiting for <strong className="font-black">Hemen Das</strong> to inspect photo quality & approve
-                    </span>
-                  </div>
-                </div>
-                <span className="text-[9px] font-mono font-black uppercase bg-amber-500 text-black px-2 py-0.5 rounded-xs flex-shrink-0 shadow-xs">
-                  In Review
-                </span>
-              </div>
-
-              {/* DIRECT 1-CLICK APPROVAL CONTROLS FOR HEMEN DAS */}
-              {isAdmin && (
-                <div className="pt-2 border-t border-amber-300/60 dark:border-amber-700/60 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-amber-900 dark:text-amber-300 flex items-center gap-1">
-                      <span>👑 Hemen Das Inspection Actions:</span>
-                    </span>
-
-                    {!isCardRejecting && (
-                      <div className="flex items-center gap-1.5 ml-auto">
-                        {onApproveTask && (
-                          <button
-                            type="button"
-                            id={`card-approve-btn-${task.id}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onApproveTask(task.id);
-                            }}
-                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase tracking-tight flex items-center gap-1.5 transition cursor-pointer shadow-md active:scale-95 rounded-xs animate-pulse"
-                            title="Verify photo proof and officially approve task"
-                          >
-                            <Check className="w-4 h-4 stroke-[3]" />
-                            <span>✓ APPROVE QUALITY</span>
-                          </button>
-                        )}
-
-                        {onRejectTask && (
-                          <button
-                            type="button"
-                            id={`card-reject-btn-${task.id}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setIsCardRejecting(true);
-                            }}
-                            className="px-2.5 py-1.5 bg-red-600/90 hover:bg-red-600 text-white text-xs font-black uppercase tracking-tight flex items-center gap-1 transition cursor-pointer shadow-xs active:scale-95 rounded-xs"
-                            title="Reject photo proof with reason"
-                          >
-                            <X className="w-3.5 h-3.5 stroke-[3]" />
-                            <span>✕ Reject</span>
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {isCardRejecting && (
-                    <div className="p-2 bg-red-950/20 border border-red-500/40 rounded-xs space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-black uppercase text-red-500">
-                          Select quick reason or write feedback:
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsCardRejecting(false);
-                            setCardRejectReason('');
-                          }}
-                          className="text-[10px] text-zinc-400 hover:text-white uppercase font-bold"
-                        >
-                          ✕ Cancel
-                        </button>
-                      </div>
-
-                      {/* Quick Presets */}
-                      <div className="flex flex-wrap gap-1">
-                        {[
-                          'Photo too blurry / unclear',
-                          'Gauge / Temperature not visible',
-                          'Station prep incomplete',
-                          'Wrong area photographed',
-                        ].map((preset) => (
-                          <button
-                            key={preset}
-                            type="button"
-                            onClick={() => setCardRejectReason(preset)}
-                            className={`px-2 py-0.5 text-[9px] font-bold uppercase rounded-xs border cursor-pointer ${
-                              cardRejectReason === preset
-                                ? 'bg-red-600 text-white border-red-500'
-                                : 'bg-black/40 text-zinc-300 border-zinc-700 hover:border-zinc-500'
-                            }`}
-                          >
-                            {preset}
-                          </button>
-                        ))}
-                      </div>
-
-                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-1.5 pt-1">
-                        <input
-                          type="text"
-                          value={cardRejectReason}
-                          onChange={(e) => setCardRejectReason(e.target.value)}
-                          placeholder="Type specific reason for staff..."
-                          className={`flex-1 p-1.5 text-xs font-bold border rounded-xs outline-none ${
-                            isLightMode ? 'bg-white border-red-400 text-black' : 'bg-black border-red-500 text-white'
-                          }`}
-                          autoFocus
-                        />
-                        <div className="flex items-center gap-1 self-end sm:self-auto">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (onRejectTask && cardRejectReason.trim()) {
-                                onRejectTask(task.id, cardRejectReason.trim());
-                                setIsCardRejecting(false);
-                                setCardRejectReason('');
-                              }
-                            }}
-                            disabled={!cardRejectReason.trim()}
-                            className="px-3 py-1.5 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-[10px] font-black uppercase rounded-xs cursor-pointer shadow-xs"
-                          >
-                            Confirm Reject
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
               )}
             </div>
           )}
@@ -918,26 +577,26 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           {/* ========================================================================= */}
           {hasSubTasks && (
             <div
-              className={`mt-3 p-2.5 sm:p-3 border-2 rounded-xs space-y-2 ${
+              className={`mt-1.5 p-1.5 sm:p-2 border rounded space-y-1 ${
                 isLightMode
                   ? 'bg-zinc-50 border-zinc-200'
                   : 'bg-black/60 border-zinc-800'
               }`}
             >
               {/* Sub-tasks Progress Header */}
-              <div className="flex items-center justify-between text-xs flex-wrap gap-2">
-                <div className="flex items-center gap-1.5">
-                  <CheckSquare className="w-3.5 h-3.5 text-blue-500 stroke-[2.5]" />
+              <div className="flex items-center justify-between text-[10px] flex-wrap gap-1">
+                <div className="flex items-center gap-1">
+                  <CheckSquare className="w-2.5 h-2.5 text-blue-500 stroke-[2.5]" />
                   <span
-                    className={`font-black uppercase tracking-tight text-[11px] ${
+                    className={`font-black uppercase tracking-tight text-[9px] ${
                       isLightMode ? 'text-zinc-900' : 'text-zinc-200'
                     }`}
                   >
-                    Checklist Sub-Tasks
+                    Sub-Tasks
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2 ml-auto">
+                <div className="flex items-center gap-1 ml-auto">
                   {/* Option to split subtasks into standalone individual task cards */}
                   {onUnpackSubTasks && subTasks.length > 0 && !task.completed && (
                     <button
@@ -947,19 +606,19 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                         e.stopPropagation();
                         onUnpackSubTasks(task.id);
                       }}
-                      className={`px-2 py-0.5 text-[9px] font-black uppercase tracking-tight border flex items-center gap-1 transition cursor-pointer active:scale-95 rounded-xs ${
+                      className={`px-1 py-0.2 text-[8px] font-black uppercase tracking-tight border flex items-center gap-0.5 transition cursor-pointer active:scale-95 rounded-xs ${
                         isLightMode
                           ? 'bg-purple-50 hover:bg-purple-100 text-purple-900 border-purple-300'
                           : 'bg-purple-950/80 hover:bg-purple-900 text-purple-300 border-purple-700'
                       }`}
                       title="Convert these checklist sub-tasks into separate individual task cards"
                     >
-                      <span>⚡ Split into Separate Cards</span>
+                      <span>⚡ Split</span>
                     </button>
                   )}
 
                   <span
-                    className={`font-mono text-[10px] font-black ${
+                    className={`font-mono text-[9px] font-black ${
                       allSubTasksDone
                         ? 'text-emerald-500'
                         : isLightMode
@@ -967,13 +626,13 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                         : 'text-zinc-400'
                     }`}
                   >
-                    {doneSubTasksCount}/{subTasks.length} Done ({subTasksProgress}%)
+                    {doneSubTasksCount}/{subTasks.length} ({subTasksProgress}%)
                   </span>
 
                   <button
                     type="button"
                     onClick={() => setIsSubTasksExpanded(!isSubTasksExpanded)}
-                    className="text-[10px] text-zinc-400 hover:text-white uppercase font-bold cursor-pointer"
+                    className="text-[9px] text-zinc-400 hover:text-white uppercase font-bold cursor-pointer"
                   >
                     {isSubTasksExpanded ? 'Hide' : 'Show'}
                   </button>
@@ -981,7 +640,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
               </div>
 
               {/* Progress Bar */}
-              <div className="w-full bg-zinc-700/40 h-1.5 rounded-full overflow-hidden">
+              <div className="w-full bg-zinc-700/40 h-1 rounded-full overflow-hidden">
                 <div
                   className={`h-full transition-all duration-300 ${
                     allSubTasksDone ? 'bg-emerald-500' : 'bg-blue-500'
@@ -992,7 +651,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
 
               {/* Sub-tasks interactive list */}
               {isSubTasksExpanded && (
-                <div className="space-y-2 pt-1">
+                <div className="space-y-0.5 pt-0.5">
                   {subTasks.map((sub: SubTaskItem, sIdx: number) => {
                     const hasSubPhoto = Boolean(sub.media && sub.media.some((m) => m.type === 'photo'));
                     const hasSubVideo = Boolean(sub.media && sub.media.some((m) => m.type === 'video'));
@@ -1009,7 +668,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                     return (
                       <div
                         key={sub.id ? `sub-${task.id}-${sub.id}-${sIdx}` : `sub-${task.id}-${sIdx}`}
-                        className={`p-3 border-2 transition text-xs rounded-xs space-y-2 shadow-xs ${
+                        className={`p-1 sm:p-1.5 border transition text-xs rounded space-y-0.5 shadow-xs ${
                           sub.isDone
                             ? isLightMode
                               ? 'bg-zinc-100/90 border-zinc-200 text-zinc-500'
@@ -1020,27 +679,14 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                         }`}
                       >
                         {/* Subtask Top Header Row: Step #, Checkbox, Title, and Mandatory Proof Chips */}
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0 flex-1">
-                            {/* Step Sequence Badge */}
-                            <span
-                              className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-xs border flex-shrink-0 ${
-                                sub.isDone
-                                  ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800'
-                                  : isLightMode
-                                  ? 'bg-zinc-100 text-zinc-700 border-zinc-300'
-                                  : 'bg-zinc-800 text-zinc-300 border-zinc-700'
-                              }`}
-                            >
-                              Item #{sIdx + 1}
-                            </span>
-
+                        <div className="flex items-center justify-between gap-1.5">
+                          <div className="flex items-center gap-1.5 min-w-0 flex-1">
                             {/* Subtask Checkbox with strict validation */}
                             <button
                               type="button"
                               id={`subtask-chk-${sub.id}`}
                               onClick={(e) => handleSubTaskClick(e, sub)}
-                              className={`w-5 h-5 border-2 flex items-center justify-center transition cursor-pointer flex-shrink-0 rounded-xs ${
+                              className={`w-3.5 h-3.5 border flex items-center justify-center transition cursor-pointer flex-shrink-0 rounded-xs ${
                                 sub.isDone
                                   ? 'bg-emerald-500 border-emerald-500 text-black'
                                   : isLightMode
@@ -1055,13 +701,13 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                                   : 'Click to complete sub-task'
                               }
                             >
-                              {sub.isDone && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                              {sub.isDone && <Check className="w-2.5 h-2.5 stroke-[3]" />}
                             </button>
 
                             {/* Subtask Title */}
                             <span
                               onClick={(e) => handleSubTaskClick(e, sub)}
-                              className={`font-black text-xs sm:text-[13px] cursor-pointer select-none truncate ${
+                              className={`font-semibold text-xs cursor-pointer select-none truncate ${
                                 sub.isDone ? 'line-through opacity-60' : ''
                               }`}
                             >
@@ -1145,30 +791,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                           >
                             <Camera className={`w-2.5 h-2.5 ${subPhotoMissing ? 'text-emerald-300' : 'text-emerald-500'}`} />
                             <span>{hasSubPhoto ? 'Photo ✓' : '📷 Camera'} {subPhotoMissing && '*'}</span>
-                          </button>
-
-                          {/* + Video Button */}
-                          <button
-                            type="button"
-                            id={`subtask-video-${sub.id}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActiveSubTaskIdForMedia(sub.id);
-                              subTaskVideoInputRef.current?.click();
-                            }}
-                            className={`px-2 py-0.5 text-[9px] font-black uppercase tracking-tight border flex items-center gap-1 cursor-pointer transition active:scale-95 ${
-                              subVideoMissing
-                                ? 'bg-rose-950 text-rose-200 border-rose-500 animate-pulse ring-1 ring-rose-500/50'
-                                : hasSubVideo
-                                ? 'bg-rose-950/60 text-rose-300 border-rose-700 hover:bg-rose-900'
-                                : isLightMode
-                                ? 'bg-zinc-100 hover:bg-zinc-200 text-zinc-800 border-zinc-300'
-                                : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border-zinc-700'
-                            }`}
-                            title={subVideoMissing ? 'Mandatory video proof required!' : 'Attach video for this sub-task'}
-                          >
-                            <Video className={`w-2.5 h-2.5 ${subVideoMissing ? 'text-rose-300' : 'text-rose-500'}`} />
-                            <span>{hasSubVideo ? 'Video ✓' : '+ Video'} {subVideoMissing && '*'}</span>
                           </button>
 
                           {/* + Note Button */}
@@ -1391,196 +1013,32 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             </div>
           )}
 
-          {/* DEDICATED TASK SUBMIT / PROOF COMPLETION BAR */}
+          {/* Card Footer: Minimal Proof Actions & Admin Controls */}
           <div
-            id={`task-submit-bar-${task.id}`}
-            className={`mt-3 p-2.5 sm:p-3 border-2 rounded-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 shadow-xs ${
-              task.completed
-                ? isLightMode
-                  ? 'bg-emerald-50/90 border-emerald-300'
-                  : 'bg-emerald-950/30 border-emerald-800/80'
-                : isTaskPhotoMissing
-                ? isLightMode
-                  ? 'bg-amber-50/95 border-amber-400'
-                  : 'bg-amber-950/40 border-amber-600/80'
-                : hasSubTasks && !allSubTasksDone
-                ? isLightMode
-                  ? 'bg-zinc-100/90 border-zinc-300'
-                  : 'bg-zinc-900/90 border-zinc-700'
-                : isLightMode
-                ? 'bg-blue-50/95 border-blue-400'
-                : 'bg-blue-950/40 border-blue-600/80'
+            className={`mt-1.5 pt-1.5 border-t flex flex-wrap items-center justify-between gap-1.5 ${
+              isLightMode ? 'border-zinc-100' : 'border-zinc-800/60'
             }`}
           >
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div
-                className={`w-7 h-7 rounded-xs flex items-center justify-center flex-shrink-0 font-black ${
-                  task.completed
-                    ? 'bg-emerald-600 text-white shadow-xs'
-                    : isTaskPhotoMissing
-                    ? 'bg-amber-500 text-black shadow-xs'
-                    : hasSubTasks && !allSubTasksDone
-                    ? 'bg-zinc-700 text-zinc-300'
-                    : 'bg-blue-600 text-white animate-pulse shadow-xs'
-                }`}
-              >
-                {task.completed ? (
-                  <Check className="w-4 h-4 stroke-[3]" />
-                ) : isTaskPhotoMissing ? (
-                  <Camera className="w-4 h-4" />
-                ) : (
-                  <CheckSquare className="w-4 h-4 stroke-[2.5]" />
-                )}
-              </div>
-
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span
-                    className={`text-xs font-black uppercase tracking-tight ${
-                      task.completed
-                        ? 'text-emerald-500'
-                        : isTaskPhotoMissing
-                        ? isLightMode
-                          ? 'text-amber-950'
-                          : 'text-amber-300'
-                        : hasSubTasks && !allSubTasksDone
-                        ? isLightMode
-                          ? 'text-zinc-800'
-                          : 'text-zinc-300'
-                        : isLightMode
-                        ? 'text-blue-950'
-                        : 'text-blue-300'
-                    }`}
-                  >
-                    {task.completed
-                      ? 'Task Completed & Submitted'
-                      : isTaskPhotoMissing
-                      ? 'Photo Proof Required To Submit'
-                      : hasSubTasks && !allSubTasksDone
-                      ? `Sub-tasks Incomplete (${doneSubTasksCount}/${subTasks.length})`
-                      : 'Ready for Official Submission'}
-                  </span>
-
-                  {task.submittedBy && task.completed && (
-                    <span className="text-[10px] text-zinc-400 font-medium">
-                      (by {task.submittedBy})
-                    </span>
-                  )}
-                </div>
-
-                <p
-                  className={`text-[11px] leading-tight truncate mt-0.5 ${
-                    isLightMode ? 'text-zinc-600' : 'text-zinc-400'
-                  }`}
-                >
-                  {task.completed
-                    ? `Verified and logged in shift record • Awaiting Hemen Das inspection`
-                    : isTaskPhotoMissing
-                    ? 'Must snap/attach photo proof before submission is accepted.'
-                    : hasSubTasks && !allSubTasksDone
-                    ? 'Please complete and check all nested checklist items above.'
-                    : 'All checkpoints satisfied. Click Submit to mark complete & send for review.'}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
-              {!task.completed ? (
+            {/* Assignee Information (only if assigned) */}
+            <div className="flex items-center gap-1 text-[10px] font-medium text-zinc-500 dark:text-zinc-400">
+              {assignedStaff ? (
                 <>
-                  {isTaskPhotoMissing ? (
-                    <button
-                      type="button"
-                      id={`submit-snap-photo-${task.id}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setLiveCameraSubTaskId(null);
-                        setIsLiveCameraOpen(true);
-                      }}
-                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase tracking-tight flex items-center gap-1.5 transition cursor-pointer active:scale-95 shadow-md rounded-xs animate-pulse"
-                      title="Snap required photo proof to complete this task"
-                    >
-                      <Camera className="w-4 h-4 stroke-[2.5]" />
-                      <span>📷 Snap Photo & Submit</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      id={`submit-task-btn-${task.id}`}
-                      onClick={handleParentToggleClick}
-                      disabled={hasSubTasks && !allSubTasksDone}
-                      className={`px-4 py-2 text-xs font-black uppercase tracking-tight flex items-center gap-1.5 transition cursor-pointer active:scale-95 shadow-md rounded-xs ${
-                        hasSubTasks && !allSubTasksDone
-                          ? 'bg-zinc-700 text-zinc-400 cursor-not-allowed opacity-60'
-                          : 'bg-emerald-600 hover:bg-emerald-500 text-white animate-pulse'
-                      }`}
-                      title={
-                        hasSubTasks && !allSubTasksDone
-                          ? `Complete remaining ${subTasks.length - doneSubTasksCount} sub-tasks first`
-                          : 'Submit task officially'
-                      }
-                    >
-                      <Check className="w-4 h-4 stroke-[3]" />
-                      <span>🚀 Submit Task</span>
-                    </button>
-                  )}
+                  <User className="w-2.5 h-2.5 text-zinc-400" />
+                  <span>
+                    <strong>{assignedStaff.name}</strong>
+                    <span className="opacity-75 text-[9px] ml-0.5">({assignedStaff.designation})</span>
+                  </span>
                 </>
-              ) : (
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className="px-2.5 py-1 text-[10px] font-black uppercase tracking-tight bg-emerald-600/20 text-emerald-400 border border-emerald-500/50 flex items-center gap-1 rounded-xs"
-                    title="Task has been submitted and locked. Cannot be reopened or undone."
-                  >
-                    <Check className="w-3.5 h-3.5 stroke-[3]" />
-                    <span>✓ Submitted & Locked</span>
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Task Bottom Control Bar with Assignee, Proof Actions, Edit, and Delete buttons */}
-          <div
-            className={`mt-3 pt-2 border-t flex flex-wrap items-center justify-between gap-2 ${
-              isLightMode ? 'border-zinc-200' : 'border-zinc-800/80'
-            }`}
-          >
-            {/* Assignee Information */}
-            <div
-              className={`flex items-center gap-1 text-[11px] sm:text-xs font-bold uppercase tracking-wider ${
-                isLightMode ? 'text-zinc-800' : 'text-zinc-300'
-              }`}
-            >
-              <User
-                className={`w-3 h-3 sm:w-3.5 sm:h-3.5 stroke-[2.5] ${
-                  isLightMode ? 'text-zinc-600' : 'text-zinc-400'
-                }`}
-              />
-              <span>
-                {assignedStaff ? (
-                  <>
-                    <strong className={`font-black ${isLightMode ? 'text-zinc-950' : 'text-white'}`}>
-                      {assignedStaff.name}
-                    </strong>
-                    <span
-                      className={`opacity-75 text-[10px] ml-1 ${
-                        isLightMode ? 'text-zinc-600' : 'text-zinc-400'
-                      }`}
-                    >
-                      ({assignedStaff.designation})
-                    </span>
-                  </>
-                ) : task.assignee ? (
-                  task.assignee
-                ) : (
-                  <span className={`opacity-60 italic ${isLightMode ? 'text-zinc-500' : 'text-zinc-500'}`}>
-                    Unassigned
-                  </span>
-                )}
-              </span>
+              ) : task.assignee ? (
+                <>
+                  <User className="w-2.5 h-2.5 text-zinc-400" />
+                  <span>{task.assignee}</span>
+                </>
+              ) : null}
             </div>
 
             {/* Quick Actions Bar on every task */}
-            <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
+            <div className="flex flex-wrap items-center gap-1 ml-auto">
               {/* Only show parent attachment buttons for standalone tasks without subtasks */}
               {!hasSubTasks && (
                 <>
@@ -1593,34 +1051,17 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                       setLiveCameraSubTaskId(null);
                       setIsLiveCameraOpen(true);
                     }}
-                    className={`px-2 py-1 text-[10px] font-black uppercase tracking-tight border flex items-center gap-1 cursor-pointer active:scale-95 transition ${
-                      isLightMode
-                        ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-300'
-                        : 'bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border-emerald-700'
+                    className={`px-1.5 py-0.5 text-[9px] font-bold rounded border flex items-center gap-0.5 cursor-pointer transition ${
+                      hasTaskPhoto
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300'
+                        : isLightMode
+                        ? 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700 border-zinc-200'
+                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border-zinc-700'
                     }`}
                     title="Open live camera to snap proof photo"
                   >
-                    <Camera className="w-3 h-3 text-emerald-500" />
-                    <span>📷 Camera</span>
-                  </button>
-
-                  {/* 🎥 Video Quick Action (Strictly Video format) */}
-                  <button
-                    type="button"
-                    id={`add-video-task-${task.id}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      videoInputRef.current?.click();
-                    }}
-                    className={`px-2 py-1 text-[10px] font-black uppercase tracking-tight border flex items-center gap-1 cursor-pointer active:scale-95 transition ${
-                      isLightMode
-                        ? 'bg-zinc-100 hover:bg-zinc-200 text-zinc-900 border-zinc-300'
-                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white border-zinc-700'
-                    }`}
-                    title="Add Video to this task"
-                  >
-                    <Video className={`w-3 h-3 ${isLightMode ? 'text-red-700' : 'text-red-400'}`} />
-                    <span>+ Video</span>
+                    <Camera className="w-2.5 h-2.5" />
+                    <span>{hasTaskPhoto ? 'Photo ✓' : 'Add Photo'}</span>
                   </button>
 
                   {/* 📝 Note Quick Action */}
@@ -1632,48 +1073,19 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                       setNoteDraft(task.notes || '');
                       setIsEditingNote(!isEditingNote);
                     }}
-                    className={`px-2 py-1 text-[10px] font-black uppercase tracking-tight border flex items-center gap-1 cursor-pointer active:scale-95 transition ${
+                    className={`px-1.5 py-0.5 text-[9px] font-bold rounded border flex items-center gap-0.5 cursor-pointer transition ${
                       hasNotes
-                        ? isLightMode
-                          ? 'bg-amber-100 text-amber-950 border-amber-400 hover:bg-amber-200'
-                          : 'bg-zinc-800 text-amber-300 border-amber-500/50 hover:border-amber-400'
+                        ? 'bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-950/40 dark:text-amber-300'
                         : isLightMode
-                        ? 'bg-zinc-100 hover:bg-zinc-200 text-zinc-900 border-zinc-300'
-                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white border-zinc-700'
+                        ? 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700 border-zinc-200'
+                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border-zinc-700'
                     }`}
                     title={hasNotes ? 'Edit Notes' : 'Add Note to this task'}
                   >
-                    <FileText className={`w-3 h-3 ${isLightMode ? 'text-amber-700' : 'text-amber-400'}`} />
+                    <FileText className="w-2.5 h-2.5" />
                     <span>{hasNotes ? 'Notes' : '+ Note'}</span>
                   </button>
                 </>
-              )}
-
-              {/* Quick Approve / Approved Status for Hemen Das */}
-              {isAdmin && onApproveTask && (
-                task.approvalStatus === 'approved' ? (
-                  <span
-                    className="px-2 py-1 text-[10px] font-black uppercase tracking-tight bg-emerald-600/20 text-emerald-400 border border-emerald-500/50 flex items-center gap-1 rounded-xs"
-                    title="Task and photo proofs approved by Hemen Das"
-                  >
-                    <Check className="w-3 h-3 stroke-[3]" />
-                    <span>Approved</span>
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    id={`toolbar-approve-task-${task.id}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onApproveTask(task.id);
-                    }}
-                    className="px-2.5 py-1 text-[10px] font-black uppercase tracking-tight bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500 flex items-center gap-1 cursor-pointer active:scale-95 transition shadow-xs rounded-xs"
-                    title="1-Click Approve this task & photo quality"
-                  >
-                    <Check className="w-3.5 h-3.5 stroke-[3]" />
-                    <span>✓ Approve</span>
-                  </button>
-                )
               )}
 
               {/* Edit Icon Button: Clear, prominent for Admin and Manager */}
@@ -1685,15 +1097,10 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                     e.stopPropagation();
                     onEditTask(task);
                   }}
-                  className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-tight border flex items-center gap-1 cursor-pointer active:scale-95 transition ${
-                    isLightMode
-                      ? 'bg-zinc-950 text-white hover:bg-zinc-800 border-zinc-950 shadow-xs'
-                      : 'bg-white text-black hover:bg-zinc-200 border-white shadow-xs'
-                  }`}
-                  title="Edit checklist, time window, or sub-tasks"
+                  className="p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 rounded cursor-pointer"
+                  title="Edit question"
                 >
-                  <Edit2 className="w-3 h-3 stroke-[2.5]" />
-                  <span>Edit</span>
+                  <Edit2 className="w-3 h-3" />
                 </button>
               )}
 
@@ -1703,20 +1110,13 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                   type="button"
                   id={`delete-task-${task.id}`}
                   onClick={handleDeleteTaskCard}
-                  className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-tight border flex items-center gap-1 cursor-pointer active:scale-95 transition ${
-                    isLightMode
-                      ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-300'
-                      : 'bg-red-950/50 hover:bg-red-900/80 text-red-400 border-red-900/80'
-                  } ${confirmDelete ? 'bg-red-600 text-white border-red-600' : ''}`}
-                  title={confirmDelete ? 'Click again to confirm delete' : `Delete checklist "${task.title}"`}
+                  className="p-1 text-zinc-400 hover:text-red-600 rounded cursor-pointer"
+                  title={confirmDelete ? 'Click again to confirm delete' : `Delete question`}
                 >
                   {confirmDelete ? (
-                    <span>Confirm Delete?</span>
+                    <span className="text-[9px] font-black uppercase text-red-600">Delete?</span>
                   ) : (
-                    <>
-                      <Trash2 className="w-3 h-3 stroke-[2.5]" />
-                      <span>Delete</span>
-                    </>
+                    <Trash2 className="w-3 h-3" />
                   )}
                 </button>
               )}

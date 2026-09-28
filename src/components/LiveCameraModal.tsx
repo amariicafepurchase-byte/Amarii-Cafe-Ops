@@ -338,7 +338,7 @@ export const LiveCameraModal: React.FC<LiveCameraModalProps> = ({
     const now = new Date();
     const fileName = `live_cam_${now.toISOString().replace(/[:.]/g, '-')}.jpg`;
     try {
-      const compressed = await compressImage(capturedImage, 1400, 0.88);
+      const compressed = await compressImage(capturedImage, 800, 0.65);
       const mediaItem: TaskMedia = {
         id: `media-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
         type: 'photo',
@@ -376,7 +376,7 @@ export const LiveCameraModal: React.FC<LiveCameraModalProps> = ({
 
     triggerHaptic('shutter');
     try {
-      const compressedDataUrl = await compressImage(file, 1400, 0.88);
+      const compressedDataUrl = await compressImage(file, 800, 0.65);
       const mediaItem: TaskMedia = {
         id: `media-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
         type: 'photo',
@@ -473,121 +473,32 @@ export const LiveCameraModal: React.FC<LiveCameraModalProps> = ({
               <span>Snapshot Captured</span>
             </div>
           </div>
-        ) : cameraError ? (
-          /* Camera Fallback State */
-          <div className="p-6 text-center max-w-md text-white space-y-4">
-            <div className="w-12 h-12 bg-emerald-950/80 border border-emerald-500/60 text-emerald-400 flex items-center justify-center mx-auto rounded-xl">
-              <Camera className="w-6 h-6" />
+        ) : (
+          /* Clean Direct Camera UI - Only working green camera */
+          <div className="p-8 text-center max-w-md text-white space-y-6">
+            <div className="w-20 h-20 bg-emerald-500 text-black flex items-center justify-center mx-auto rounded-full shadow-2xl">
+              <Camera className="w-10 h-10 stroke-[2.5]" />
             </div>
             <div>
-              <h4 className="text-sm font-black uppercase text-emerald-400">Live Camera Ready</h4>
-              <p className="text-xs text-zinc-300 mt-1.5 leading-relaxed">
-                Tap the button below to take a live photo directly with your phone camera.
+              <h4 className="text-lg font-black uppercase text-white tracking-wide">Live Camera Proof</h4>
+              <p className="text-xs text-zinc-400 mt-1.5 font-bold uppercase">
+                Tap the green button below to capture photo directly with your phone camera
               </p>
             </div>
 
-            <div className="pt-2 flex flex-col gap-2">
+            <div className="pt-2">
               <button
                 type="button"
                 onClick={() => {
                   triggerHaptic('medium');
                   nativeCameraInputRef.current?.click();
                 }}
-                className="w-full py-3.5 bg-[#E05A47] hover:bg-[#d04936] text-white font-black uppercase text-xs tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg active:scale-95 transition rounded-xl"
+                className="w-full py-4.5 px-6 bg-emerald-500 hover:bg-emerald-400 text-black font-black uppercase text-sm tracking-wider flex items-center justify-center gap-3 cursor-pointer shadow-2xl active:scale-95 transition rounded-xl"
               >
-                <Camera className="w-5 h-5 stroke-[2.5]" />
-                <span>📸 Open Phone Camera</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  triggerHaptic('light');
-                  startCamera(facingMode);
-                }}
-                className="w-full py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold uppercase text-xs tracking-wider flex items-center justify-center gap-1.5 cursor-pointer transition rounded-xl"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Retry Viewfinder</span>
+                <Camera className="w-6 h-6 stroke-[2.5]" />
+                <span>📷 Open Phone Camera</span>
               </button>
             </div>
-          </div>
-        ) : (
-          /* Active Live Stream */
-          <div className="relative w-full h-full flex items-center justify-center bg-black">
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className={`w-full h-full object-cover ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`}
-            />
-
-            {/* Viewfinder Target Reticle Overlay */}
-            <div className="absolute inset-6 pointer-events-none border border-white/20 flex flex-col justify-between p-2 rounded-lg">
-              <div className="flex justify-between">
-                <div className="w-6 h-6 border-t-2 border-l-2 border-emerald-400" />
-                <div className="w-6 h-6 border-t-2 border-r-2 border-emerald-400" />
-              </div>
-              <div className="self-center flex flex-col items-center gap-1 opacity-80">
-                <div className="w-9 h-9 rounded-full border border-emerald-400/80 flex items-center justify-center">
-                  <div className="w-2 h-2 bg-red-500 rounded-full animate-ping" />
-                </div>
-                <span className="text-[9px] font-mono font-bold uppercase tracking-widest text-emerald-400 drop-shadow">
-                  ● LIVE CAFE VIEW
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <div className="w-6 h-6 border-b-2 border-l-2 border-emerald-400" />
-                <div className="w-6 h-6 border-b-2 border-r-2 border-emerald-400" />
-              </div>
-            </div>
-
-            {/* In-viewfinder Flash & Camera Flip buttons */}
-            <div className="absolute top-3 right-3 flex items-center gap-2">
-              {supportsTorch && (
-                <button
-                  type="button"
-                  onClick={handleToggleTorch}
-                  className={`p-2 rounded-full border transition cursor-pointer ${
-                    torchOn
-                      ? 'bg-amber-400 text-black border-amber-300'
-                      : 'bg-black/60 text-white border-white/30 hover:bg-black/90'
-                  }`}
-                  title={torchOn ? 'Turn Flash Off' : 'Turn Flash On'}
-                >
-                  {torchOn ? <Zap className="w-4 h-4 fill-black" /> : <ZapOff className="w-4 h-4" />}
-                </button>
-              )}
-
-              {hasMultipleCameras && (
-                <button
-                  type="button"
-                  onClick={handleToggleFacingMode}
-                  className="p-2 rounded-full bg-black/60 text-white border border-white/30 hover:bg-black/90 transition cursor-pointer"
-                  title="Flip Camera"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-
-            {isLoadingCamera && (
-              <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-3 text-white p-4">
-                <RefreshCw className="w-7 h-7 animate-spin text-[#E05A47]" />
-                <span className="text-xs font-bold uppercase tracking-wider text-center">Starting Camera...</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    nativeCameraInputRef.current?.click();
-                  }}
-                  className="mt-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-black uppercase tracking-wider rounded-lg flex items-center gap-1.5 cursor-pointer shadow-md"
-                >
-                  <Camera className="w-3.5 h-3.5" />
-                  <span>Snap with Phone Camera</span>
-                </button>
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -615,42 +526,19 @@ export const LiveCameraModal: React.FC<LiveCameraModalProps> = ({
             </button>
           </div>
         ) : (
-          <div className="w-full flex items-center justify-between gap-4">
-            {/* Direct Device Camera Shutter (Direct camera, NO gallery) */}
+          <div className="w-full flex items-center justify-center">
+            {/* Working Direct Phone Camera Shutter */}
             <button
               type="button"
               onClick={() => {
                 triggerHaptic('medium');
                 nativeCameraInputRef.current?.click();
               }}
-              className="py-2.5 px-3 bg-zinc-900 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer rounded-xl active:scale-95 transition"
+              className="w-full py-3.5 px-6 bg-emerald-500 hover:bg-emerald-400 text-black font-black uppercase text-xs tracking-wider flex items-center justify-center gap-2 cursor-pointer rounded-xl active:scale-95 transition shadow-lg"
               title="Open Device Camera Directly"
             >
-              <Camera className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Camera</span>
-            </button>
-
-            {/* Primary Circular Shutter Button */}
-            <div className="flex-1 flex items-center justify-center">
-              <button
-                type="button"
-                onClick={handleTakeSnapshot}
-                className="w-16 h-16 rounded-full border-4 border-white bg-[#E05A47] hover:bg-[#d04936] active:scale-90 transition-all flex items-center justify-center cursor-pointer shadow-2xl"
-                aria-label="Capture live photo"
-              >
-                <div className="w-11 h-11 rounded-full bg-white/20 border-2 border-white flex items-center justify-center" />
-              </button>
-            </div>
-
-            {/* Flip Camera Button */}
-            <button
-              type="button"
-              onClick={handleToggleFacingMode}
-              className="py-2.5 px-3 bg-zinc-900 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer rounded-xl active:scale-95 transition"
-              title="Flip between front and rear cameras"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span>Flip</span>
+              <Camera className="w-5 h-5 stroke-[2.5]" />
+              <span>📷 Capture with Phone Camera</span>
             </button>
           </div>
         )}

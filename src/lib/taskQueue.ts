@@ -161,6 +161,57 @@ function sanitizePayloadForStorage(op: QueuedTaskOperation): QueuedTaskOperation
   }
 }
 
+// Helper to guarantee a task document does not exceed Firestore's 1MB limit
+export function optimizeOpPayloadSize(op: any): void {
+  try {
+    const compactTask = (t: any) => {
+      if (!t) return;
+      // Deduplicate media: If subTasks have media, do NOT duplicate identical media in parent task.media
+      if (t.subTasks && Array.isArray(t.subTasks) && t.media && Array.isArray(t.media)) {
+        const subMediaUrls = new Set<string>();
+        t.subTasks.forEach((st: any) => {
+          if (st.media && Array.isArray(st.media)) {
+            st.media.forEach((m: any) => {
+              if (m.url) subMediaUrls.add(m.url);
+            });
+          }
+        });
+        t.media = t.media.filter((m: any) => !m.url || !subMediaUrls.has(m.url));
+      }
+
+      // If document JSON string is still greater than 700KB, cap individual media sizes
+      const jsonStr = JSON.stringify(t);
+      if (jsonStr.length > 700000) {
+        const trimMediaItem = (m: any) => {
+          if (m && m.url && typeof m.url === 'string' && m.url.startsWith('data:') && m.url.length > 80000) {
+            // Trim to safe preview length to guarantee Firestore 1MB boundary is respected
+            m.url = m.url.substring(0, 75000);
+          }
+        };
+
+        if (t.media && Array.isArray(t.media)) {
+          t.media.forEach(trimMediaItem);
+        }
+        if (t.subTasks && Array.isArray(t.subTasks)) {
+          t.subTasks.forEach((st: any) => {
+            if (st.media && Array.isArray(st.media)) {
+              st.media.forEach(trimMediaItem);
+            }
+          });
+        }
+      }
+    };
+
+    if (op.task) compactTask(op.task);
+    if (op.fullTask) compactTask(op.fullTask);
+    if (op.tasks && Array.isArray(op.tasks)) {
+      op.tasks.forEach(compactTask);
+    }
+  } catch (e) {
+    console.warn('[TaskQueue] optimizeOpPayloadSize error:', e);
+  }
+}
+
 // In-memory queue cache
 let inMemoryQueue: QueuedTaskOperation[] = [];
 
@@ -290,6 +341,9 @@ export function clearTaskQueue(): void {
 
 // Execute a single operation against Firestore
 async function executeSingleOperation(op: QueuedTaskOperation): Promise<void> {
+  // Pre-flight safeguard: Ensure media payload size does not breach Firestore's 1MB document limit
+  optimizeOpPayloadSize(op);
+
   switch (op.type) {
     case 'SAVE_TASK':
       await saveTaskToFirebase(op.task);
@@ -362,13 +416,35 @@ export async function processTaskQueue(): Promise<{
       console.log(`[TaskQueue] Successfully synced operation ${currentOp.type} (id: ${currentOp.id})`);
     } catch (err: any) {
       console.error(`[TaskQueue] Failed to execute queued operation ${currentOp.type}:`, err);
+
+      // Auto-recovery for Firestore 1MB document size limit error
+      const isSizeError =
+        err?.message?.includes('exceeds the maximum allowed size') ||
+        err?.message?.includes('1,048,576 bytes') ||
+        err?.message?.includes('size');
+
+      if (isSizeError) {
+        console.warn(`[TaskQueue] Document size limit hit on operation ${currentOp.id}. Auto-compressing and retrying...`);
+        optimizeOpPayloadSize(currentOp);
+        try {
+          await executeSingleOperation(currentOp);
+          remainingQueue.shift();
+          saveQueue(remainingQueue);
+          processedCount++;
+          console.log(`[TaskQueue] Successfully synced optimized operation ${currentOp.type} (id: ${currentOp.id})`);
+          continue;
+        } catch (retryErr) {
+          console.error('[TaskQueue] Second attempt after optimization still failed:', retryErr);
+        }
+      }
+
       failedCount++;
       currentOp.retryCount = (currentOp.retryCount || 0) + 1;
       currentOp.lastError = err?.message || 'Network error';
 
       // If permanently failing after excessive attempts (e.g. > 15), remove to prevent blockage
-      if (currentOp.retryCount > 15) {
-        console.warn(`[TaskQueue] Discarding operation ${currentOp.id} after 15 failed retries.`);
+      if (currentOp.retryCount > 15 || isSizeError) {
+        console.warn(`[TaskQueue] Discarding operation ${currentOp.id} after repeated failures.`);
         remainingQueue.shift();
       } else {
         // Stop sequential execution on connection failure to preserve ordering

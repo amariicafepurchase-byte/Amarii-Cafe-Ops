@@ -52,60 +52,8 @@ interface TaskAssignModalProps {
   defaultHeader?: ChecklistHeader | string;
 }
 
-// Preset checkpoints for standard cafe checklists with granular proof requirements
-const PRESET_CHECKPOINTS: Record<
-  string,
-  {
-    title: string;
-    isPhotoMandatory?: boolean;
-    isVideoMandatory?: boolean;
-    isNoteMandatory?: boolean;
-    media?: 'none' | 'photo' | 'video';
-  }[]
-> = {
-  'Kitchen Opening Checklist': [
-    { title: 'Check Walk-in & Reach-in Chiller temps (≤ 4°C)', isPhotoMandatory: true, isNoteMandatory: true },
-    { title: 'Inspect Deep Freezer temperature (≤ -18°C)', isNoteMandatory: true },
-    { title: 'Sanitize stainless steel prep tables & cutting boards' },
-    { title: 'Inspect fresh produce & morning mise-en-place line', isPhotoMandatory: true },
-  ],
-  'Kitchen Closing Checklist': [
-    { title: 'Turn off convection ovens, salamanders & deep fryers' },
-    { title: 'Turn off primary LPG gas manifold valve', isVideoMandatory: true },
-    { title: 'Cover, date-label & store all prepared food in chillers' },
-    { title: 'Scrub line floor drains & empty oil filter grease traps', isPhotoMandatory: true },
-  ],
-  'Bar Opening Checklist': [
-    { title: 'Purge espresso group heads & steam wands with boiling water' },
-    { title: 'Calibrate coffee grinder & dial in 36g espresso extraction yield', isVideoMandatory: true },
-    { title: 'Restock dairy, plant milks & beverage syrups in under-counter chiller', isPhotoMandatory: true },
-    { title: 'Verify ice maker bin purity and clean ice scoops' },
-  ],
-  'Bar Closing Checklist': [
-    { title: 'Perform 5x chemical backflush cycle with espresso machine cleaner' },
-    { title: 'Soak steam wands & portafilters in hot sanitizing solution' },
-    { title: 'Lock liquor rails and premium syrup inventory cabinet', isPhotoMandatory: true },
-    { title: 'Log total discarded dairy milk and opened purees in notes', isNoteMandatory: true },
-  ],
-  'Cashier Opening/Closing': [
-    { title: 'Power on PineLabs POS & test bank settlement connectivity' },
-    { title: 'Count physical opening register float (Rs. 10,000)', isPhotoMandatory: true, isNoteMandatory: true },
-    { title: 'Verify thermal receipt printer paper and backup rolls' },
-    { title: 'Run day-end POS Z-Report & deposit verified cash in safe', isPhotoMandatory: true, isNoteMandatory: true },
-  ],
-  'Service Opening/Closing': [
-    { title: 'Align all indoor and patio tables and clean chair cushions' },
-    { title: 'Set air conditioner to 22°C & configure background ambience music' },
-    { title: 'Inspect cutlery caddies, water carafes & QR code menu stands' },
-    { title: 'Conduct full floor walkthrough verifying pristine readiness', isVideoMandatory: true },
-  ],
-  'Housekeeping Opening/Closing': [
-    { title: 'Deep clean and disinfect customer restrooms & washroom fixtures' },
-    { title: 'Restock scented liquid hand soaps, paper towels & tissues' },
-    { title: 'Mop main cafe floor with antiseptic solution and dry thoroughly', isPhotoMandatory: true },
-    { title: 'Empty all outdoor and kitchen disposal bins into dumpster' },
-  ],
-};
+import { PREDEFINED_CHECKLIST_TEMPLATES } from '../data/checklistTemplates';
+const PRESET_CHECKPOINTS = PREDEFINED_CHECKLIST_TEMPLATES;
 
 export const TaskAssignModal: React.FC<TaskAssignModalProps> = ({
   isOpen,
@@ -297,10 +245,10 @@ export const TaskAssignModal: React.FC<TaskAssignModalProps> = ({
       department,
       priority,
       completed: false,
-      isPhotoMandatory: Boolean(p.isPhotoMandatory || p.media === 'photo'),
-      isVideoMandatory: Boolean(p.isVideoMandatory || p.media === 'video'),
+      isPhotoMandatory: Boolean(p.isPhotoMandatory || p.mandatoryMedia === 'photo'),
+      isVideoMandatory: Boolean(p.isVideoMandatory || p.mandatoryMedia === 'video'),
       isNoteMandatory: Boolean(p.isNoteMandatory),
-      mandatoryMedia: p.isPhotoMandatory || p.media === 'photo' ? 'photo' : p.isVideoMandatory || p.media === 'video' ? 'video' : 'none',
+      mandatoryMedia: p.isPhotoMandatory || p.mandatoryMedia === 'photo' ? 'photo' : p.isVideoMandatory || p.mandatoryMedia === 'video' ? 'video' : 'none',
       outlet: taskOutlet || activeOutlet,
       subTasks: [],
       ...(assignedMember
@@ -1551,8 +1499,8 @@ export const TaskAssignModal: React.FC<TaskAssignModalProps> = ({
                       : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-600'
                 }`}
               >
-                <span>⏳ Pending Approval</span>
-                <span className="text-[9px] sm:text-[10px] opacity-80">Follow-up</span>
+                <span>⏳ Routine / Follow-up</span>
+                <span className="text-[9px] sm:text-[10px] opacity-80">Scheduled</span>
               </button>
             </div>
           </div>

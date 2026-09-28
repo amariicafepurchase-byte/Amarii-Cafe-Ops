@@ -421,9 +421,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
   };
 
-  // Enroll Device Biometric with PIN verification & genuine hardware registration
-  const handleEnrollDeviceBiometric = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Enroll Device Biometric with PIN verification & genuine hardware registration (Native mobile default, NO Google Password Saver)
+  const handleEnrollDeviceBiometric = async (e?: React.FormEvent | React.MouseEvent) => {
+    if (e && 'preventDefault' in e) e.preventDefault();
     setEnrollError(null);
     setEnrollSuccess(null);
 
@@ -469,8 +469,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             ],
             authenticatorSelection: {
               authenticatorAttachment: 'platform',
-              userVerification: 'preferred',
-              residentKey: 'preferred',
+              userVerification: 'required',
+              residentKey: 'discouraged',
             },
             timeout: 60000,
             attestation: 'none',
@@ -1491,7 +1491,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               Enter your assigned 4-digit PIN to register this phone for 1-Tap Biometric unlock.
             </p>
 
-            <form onSubmit={handleEnrollDeviceBiometric} className="space-y-3.5">
+            <div className="space-y-3.5">
               {enrollError && (
                 <div className="p-2.5 bg-red-950/90 border border-red-500 text-red-200 text-xs font-bold rounded-lg flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 shrink-0 text-red-400" />
@@ -1511,14 +1511,23 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   Enter Your 4-Digit PIN *
                 </label>
                 <input
-                  type="password"
+                  type="tel"
                   maxLength={4}
                   inputMode="numeric"
                   pattern="[0-9]*"
-                  required
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  name="device_pairing_code"
+                  data-lpignore="true"
+                  data-form-type="other"
                   value={enrollPin}
                   onChange={(e) => setEnrollPin(e.target.value.replace(/\D/g, ''))}
                   placeholder="••••"
+                  style={{
+                    WebkitTextSecurity: 'disc',
+                  } as React.CSSProperties}
                   className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 text-emerald-400 font-mono text-center text-2xl font-black tracking-widest rounded-lg outline-none focus:border-emerald-400"
                 />
               </div>
@@ -1527,18 +1536,19 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsEnrollingBiometric(false)}
-                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-bold uppercase rounded-lg"
+                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-bold uppercase rounded-lg cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
-                  type="submit"
+                  type="button"
+                  onClick={handleEnrollDeviceBiometric}
                   className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black uppercase tracking-tight rounded-lg cursor-pointer"
                 >
                   Verify PIN & Pair
                 </button>
               </div>
-            </form>
+            </div>
           </div>
         </div>
       )}

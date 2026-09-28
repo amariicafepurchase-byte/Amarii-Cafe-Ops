@@ -30,14 +30,17 @@ export const isHemenDas = (user?: { name?: string; email?: string; id?: string; 
   const role = (user.role || '').toLowerCase();
   return (
     name.includes('hemen') ||
+    name.includes('arjun') ||
     email.includes('hemen') ||
+    email.includes('arjun') ||
+    role === 'admin' ||
+    role === 'owner' ||
     email === 'admin@amarii.cafe' ||
     email === 'hemen@amarii.cafe' ||
     email === 'hemen.das@amarii.cafe' ||
     email === 'amariicafe.purchase@gmail.com' ||
     id === 'staff-admin-hemen' ||
-    id === 'user-admin' ||
-    role === 'admin'
+    id === 'user-admin'
   );
 };
 
