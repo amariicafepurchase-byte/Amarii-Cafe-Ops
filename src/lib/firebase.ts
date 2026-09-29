@@ -148,24 +148,27 @@ export function subscribeToTasks(onUpdate: (tasks: TaskItem[], fromCache?: boole
         `[Firestore DEBUG] subscribeToTasks received snapshot: ${snapshot.size} docs (fromCache: ${snapshot.metadata.fromCache}, hasPendingWrites: ${snapshot.metadata.hasPendingWrites})`
       );
       const items: TaskItem[] = [];
+      const deletedIds = getDeletedTaskIds();
       snapshot.forEach((d) => {
-        items.push({ id: d.id, ...(d.data() as Omit<TaskItem, 'id'>) });
+        if (!deletedIds.has(d.id)) {
+          items.push({ id: d.id, ...(d.data() as Omit<TaskItem, 'id'>) });
+        }
       });
       onUpdate(items, snapshot.metadata.fromCache);
       try {
-        if (items.length > 0) {
-          localStorage.setItem('amarii_tasks_cache', JSON.stringify(items));
-        }
+        localStorage.setItem('amarii_tasks_cache', JSON.stringify(items));
       } catch (e) {}
     },
     (err) => {
       console.warn('[Firestore DEBUG] Tasks listener note (falling back to local cache):', err.message);
       try {
         const cached = localStorage.getItem('amarii_tasks_cache');
+        const deletedIds = getDeletedTaskIds();
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            onUpdate(parsed, true);
+          if (Array.isArray(parsed)) {
+            const filtered = parsed.filter((t: any) => t && t.id && !deletedIds.has(t.id));
+            onUpdate(filtered, true);
           }
         }
       } catch (e) {}
@@ -180,8 +183,11 @@ export async function fetchTasksOnce(): Promise<TaskItem[]> {
     const tasksRef = collection(db, TASKS_COLLECTION);
     const snapshot = await getDocs(tasksRef);
     const items: TaskItem[] = [];
+    const deletedIds = getDeletedTaskIds();
     snapshot.forEach((d) => {
-      items.push({ id: d.id, ...(d.data() as Omit<TaskItem, 'id'>) });
+      if (!deletedIds.has(d.id)) {
+        items.push({ id: d.id, ...(d.data() as Omit<TaskItem, 'id'>) });
+      }
     });
     return items;
   } catch (err) {
@@ -388,10 +394,47 @@ export async function batchSaveTasksToFirebase(tasks: TaskItem[]): Promise<void>
   }
 }
 
-// Clean deleted tasks from localStorage caches immediately
+// Storage keys for deleted tasks tracking
+export const STORAGE_KEY_DELETED_TASK_IDS = 'amarii_deleted_task_ids_v2';
+
+export const getDeletedTaskIds = (): Set<string> => {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_DELETED_TASK_IDS);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+};
+
+export const addDeletedTaskIds = (ids: string[]) => {
+  if (!ids || ids.length === 0 || typeof window === 'undefined') return;
+  try {
+    const current = getDeletedTaskIds();
+    ids.forEach((id) => {
+      if (id) current.add(id);
+    });
+    localStorage.setItem(STORAGE_KEY_DELETED_TASK_IDS, JSON.stringify(Array.from(current)));
+  } catch (e) {}
+};
+
+export const removeDeletedTaskIds = (ids: string[]) => {
+  if (!ids || ids.length === 0 || typeof window === 'undefined') return;
+  try {
+    const current = getDeletedTaskIds();
+    ids.forEach((id) => {
+      if (id) current.delete(id);
+    });
+    localStorage.setItem(STORAGE_KEY_DELETED_TASK_IDS, JSON.stringify(Array.from(current)));
+  } catch (e) {}
+};
+
+// Clean deleted tasks from ALL localStorage caches and offline queues immediately
 export function removeTasksFromLocalCache(taskIds: string[]) {
-  if (!taskIds || taskIds.length === 0) return;
+  if (!taskIds || taskIds.length === 0 || typeof window === 'undefined') return;
   const idSet = new Set(taskIds);
+
+  // 1. amarii_tasks_cache
   try {
     const raw = localStorage.getItem('amarii_tasks_cache');
     if (raw) {
@@ -403,6 +446,7 @@ export function removeTasksFromLocalCache(taskIds: string[]) {
     }
   } catch (e) {}
 
+  // 2. amarii_offline_tasks_cache_v1
   try {
     const rawOffline = localStorage.getItem('amarii_offline_tasks_cache_v1');
     if (rawOffline) {
@@ -413,22 +457,87 @@ export function removeTasksFromLocalCache(taskIds: string[]) {
       }
     }
   } catch (e) {}
+
+  // 3. amarii_task_offline_queue (remove queued updates for deleted tasks)
+  try {
+    const rawQueue = localStorage.getItem('amarii_task_offline_queue');
+    if (rawQueue) {
+      const parsed = JSON.parse(rawQueue);
+      if (Array.isArray(parsed)) {
+        const filtered = parsed.filter((op: any) => {
+          if ('taskId' in op && idSet.has(op.taskId)) return false;
+          if (op.type === 'SAVE_TASK' && op.task && idSet.has(op.task.id)) return false;
+          if (op.type === 'BATCH_SAVE_TASKS' && Array.isArray(op.tasks)) {
+            op.tasks = op.tasks.filter((t: any) => !idSet.has(t.id));
+            return op.tasks.length > 0;
+          }
+          return true;
+        });
+        localStorage.setItem('amarii_task_offline_queue', JSON.stringify(filtered));
+      }
+    }
+  } catch (e) {}
+
+  // 4. amarii_offline_checklist_queue_v1 (remove from offline submissions)
+  try {
+    const rawSubmissions = localStorage.getItem('amarii_offline_checklist_queue_v1');
+    if (rawSubmissions) {
+      const parsed = JSON.parse(rawSubmissions);
+      if (Array.isArray(parsed)) {
+        const updated = parsed.map((sub: any) => ({
+          ...sub,
+          finalizedTasks: Array.isArray(sub.finalizedTasks)
+            ? sub.finalizedTasks.filter((t: any) => !idSet.has(t.id))
+            : [],
+          freshBlankTasks: Array.isArray(sub.freshBlankTasks)
+            ? sub.freshBlankTasks.filter((t: any) => !idSet.has(t.id))
+            : [],
+        }));
+        localStorage.setItem('amarii_offline_checklist_queue_v1', JSON.stringify(updated));
+      }
+    }
+  } catch (e) {}
+
+  // 5. amarii_shift_history_cache (clean task items from stored shifts)
+  try {
+    const rawShifts = localStorage.getItem('amarii_shift_history_cache');
+    if (rawShifts) {
+      const parsed = JSON.parse(rawShifts);
+      if (Array.isArray(parsed)) {
+        const updated = parsed.map((s: any) => ({
+          ...s,
+          tasks: Array.isArray(s.tasks) ? s.tasks.filter((t: any) => !idSet.has(t.id)) : [],
+          completedTasks: Array.isArray(s.tasks) ? s.tasks.filter((t: any) => !idSet.has(t.id) && t.completed).length : s.completedTasks,
+          totalTasks: Array.isArray(s.tasks) ? s.tasks.filter((t: any) => !idSet.has(t.id)).length : s.totalTasks,
+        }));
+        localStorage.setItem('amarii_shift_history_cache', JSON.stringify(updated));
+      }
+    }
+  } catch (e) {}
 }
 
 // Delete a task permanently from Firestore & local caches
 export async function deleteTaskFromFirebase(taskId: string): Promise<void> {
   if (!taskId) return;
+  addDeletedTaskIds([taskId]);
   removeTasksFromLocalCache([taskId]);
-  const taskRef = doc(db, TASKS_COLLECTION, taskId);
-  await deleteDoc(taskRef);
+
+  try {
+    const taskRef = doc(db, TASKS_COLLECTION, taskId);
+    await deleteDoc(taskRef);
+  } catch (err: any) {
+    console.warn(`[Firestore] Note on deleteTaskFromFirebase(${taskId}):`, err.message);
+    throw err;
+  }
 }
 
 // Batch delete multiple tasks from Firestore & local caches (chunked under the 500 batch limit)
 export async function batchDeleteTasksFromFirebase(taskIds: string[]): Promise<void> {
   if (!taskIds || taskIds.length === 0) return;
+  addDeletedTaskIds(taskIds);
   removeTasksFromLocalCache(taskIds);
-  const BATCH_SIZE = 400;
 
+  const BATCH_SIZE = 400;
   for (let i = 0; i < taskIds.length; i += BATCH_SIZE) {
     const chunk = taskIds.slice(i, i + BATCH_SIZE);
     const batch = writeBatch(db);

@@ -146,15 +146,22 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
   };
 
   // Execute bulk delete
-  const handleExecuteBulkDelete = () => {
+  const handleExecuteBulkDelete = async () => {
     if (selectedTaskIds.length === 0) return;
-    if (onBatchDeleteTasks) {
-      onBatchDeleteTasks(selectedTaskIds);
-    } else {
-      selectedTaskIds.forEach((id) => onDeleteTask(id));
+    try {
+      if (onBatchDeleteTasks) {
+        await onBatchDeleteTasks(selectedTaskIds);
+      } else {
+        for (const id of selectedTaskIds) {
+          await onDeleteTask(id);
+        }
+      }
+      setSelectedTaskIds([]);
+    } catch (e) {
+      console.error('Bulk delete tasks error in modal:', e);
+    } finally {
+      setConfirmBulkDelete(false);
     }
-    setSelectedTaskIds([]);
-    setConfirmBulkDelete(false);
   };
 
   return (

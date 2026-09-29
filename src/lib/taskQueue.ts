@@ -300,6 +300,14 @@ export function enqueueTaskOperation(payload: QueuedTaskOperationPayload): Queue
       if (item.type === 'SAVE_TASK' && item.task.id === newOp.taskId) return false;
       return true;
     });
+  } else if (newOp.type === 'BATCH_DELETE_TASKS') {
+    // If multiple tasks are deleted, discard any pending updates for all of them
+    const deleteIdSet = new Set(newOp.taskIds);
+    filtered = current.filter((item) => {
+      if ('taskId' in item && deleteIdSet.has(item.taskId)) return false;
+      if (item.type === 'SAVE_TASK' && item.task && deleteIdSet.has(item.task.id)) return false;
+      return true;
+    });
   } else if (newOp.type === 'UPDATE_COMPLETION') {
     // Coalesce with prior completion updates for the same task
     filtered = current.filter(

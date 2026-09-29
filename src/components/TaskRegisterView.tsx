@@ -317,9 +317,12 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
     }
   };
 
-  const handleSingleDelete = (taskId: string) => {
-    if (onDeleteTask) {
-      onDeleteTask(taskId);
+  const handleSingleDelete = async (taskId: string) => {
+    if (!taskId) return;
+    try {
+      if (onDeleteTask) {
+        await onDeleteTask(taskId);
+      }
       setSelectedRecordIds((prev) => {
         const next = new Set(prev);
         next.delete(taskId);
@@ -327,24 +330,37 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
       });
       setShareToastMsg('✓ Record permanently deleted.');
       setTimeout(() => setShareToastMsg(null), 3500);
+    } catch (err: any) {
+      console.error('Delete task failed:', err);
+      setShareToastMsg(`❌ Delete failed: ${err?.message || 'Database error'}`);
+      setTimeout(() => setShareToastMsg(null), 4000);
+    } finally {
+      setConfirmDeleteId(null);
     }
-    setConfirmDeleteId(null);
   };
 
-  const handleExecuteBulkDelete = () => {
+  const handleExecuteBulkDelete = async () => {
     const ids = Array.from(selectedRecordIds);
     if (ids.length === 0) return;
 
-    if (onBatchDeleteTasks) {
-      onBatchDeleteTasks(ids);
-    } else if (onDeleteTask) {
-      ids.forEach((id) => onDeleteTask(id));
+    try {
+      if (onBatchDeleteTasks) {
+        await onBatchDeleteTasks(ids);
+      } else if (onDeleteTask) {
+        for (const id of ids) {
+          await onDeleteTask(id);
+        }
+      }
+      setSelectedRecordIds(new Set());
+      setShareToastMsg(`✓ ${ids.length} records permanently deleted.`);
+      setTimeout(() => setShareToastMsg(null), 3500);
+    } catch (err: any) {
+      console.error('Bulk delete failed:', err);
+      setShareToastMsg(`❌ Bulk delete failed: ${err?.message || 'Database error'}`);
+      setTimeout(() => setShareToastMsg(null), 4000);
+    } finally {
+      setIsConfirmingBulkDelete(false);
     }
-
-    setSelectedRecordIds(new Set());
-    setIsConfirmingBulkDelete(false);
-    setShareToastMsg(`✓ ${ids.length} records permanently deleted.`);
-    setTimeout(() => setShareToastMsg(null), 3500);
   };
 
   const handleExecuteBulkApprove = () => {

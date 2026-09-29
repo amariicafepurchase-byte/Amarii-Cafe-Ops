@@ -131,14 +131,37 @@ import { OfflineSyncBanner } from './components/OfflineSyncBanner';
 
 const STORAGE_KEY_STATION = 'amarii_active_station_v2';
 const STORAGE_KEY_ACTIVE_STAFF = 'amarii_active_staff_id_v2';
+const STORAGE_KEY_DELETED_TASK_IDS = 'amarii_deleted_task_ids_v2';
+
+export const getDeletedTaskIds = (): Set<string> => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_DELETED_TASK_IDS);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+};
+
+export const addDeletedTaskIds = (ids: string[]) => {
+  if (!ids || ids.length === 0) return;
+  try {
+    const current = getDeletedTaskIds();
+    ids.forEach((id) => {
+      if (id) current.add(id);
+    });
+    localStorage.setItem(STORAGE_KEY_DELETED_TASK_IDS, JSON.stringify(Array.from(current)));
+  } catch (e) {}
+};
 
 // Helper to normalize any incoming tasks without modifying their real Firestore document IDs
 const normalizeTasks = (rawTasks: TaskItem[]): TaskItem[] => {
   const result: TaskItem[] = [];
   const seenIds = new Set<string>();
+  const deletedIds = getDeletedTaskIds();
 
   rawTasks.forEach((t) => {
     if (!t || !t.id) return;
+    if (deletedIds.has(t.id)) return; // Strictly ignore permanently deleted tasks
     if (seenIds.has(t.id)) return; // Strictly deduplicate without renaming the ID
     seenIds.add(t.id);
     result.push(t);
@@ -229,7 +252,22 @@ export default function App() {
     closeOutletModal,
   } = useOutlet();
 
-  const [tasks, setTasks] = useState<TaskItem[]>(INITIAL_DAILY_TASKS);
+  const [tasks, setTasks] = useState<TaskItem[]>(() => {
+    try {
+      const cached = localStorage.getItem('amarii_tasks_cache');
+      const deletedIds = getDeletedTaskIds();
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const clean = parsed.filter((t: any) => t && t.id && !deletedIds.has(t.id));
+          if (clean.length > 0) return clean;
+        }
+      }
+      return INITIAL_DAILY_TASKS.filter((t) => !deletedIds.has(t.id));
+    } catch (e) {
+      return INITIAL_DAILY_TASKS;
+    }
+  });
   const [staffList, setStaffList] = useState<StaffMember[]>(() => {
     try {
       const cached = localStorage.getItem('amarii_staff_list_cache');
@@ -643,7 +681,7 @@ export default function App() {
     // 2. Immediately subscribe to tasks in real time
     unsubscribeTasks = subscribeToTasks(
       (liveTasks, fromCache) => {
-        if (liveTasks && liveTasks.length > 0) {
+        if (liveTasks) {
           const normalized = normalizeTasks(liveTasks);
           setTasks(normalized);
         }
@@ -747,13 +785,16 @@ export default function App() {
       // 1. Direct permanent deletion from Firestore via deleteDoc
       await deleteTaskFromFirebase(taskId);
 
-      // 2. Remove from React state upon successful deletion
+      // 2. Mark task ID permanently deleted so it cannot be revived by local caches/fallbacks
+      addDeletedTaskIds([taskId]);
+
+      // 3. Remove from React state upon successful deletion
       setTasks((prev) => prev.filter((t) => t.id !== taskId));
 
-      // 3. Immediately purge from local caches
+      // 4. Immediately purge from local caches
       removeTasksFromLocalCache([taskId]);
 
-      // 4. Update shift history records in state
+      // 5. Update shift history records in state
       setHistory((prev) =>
         prev.map((shift) => ({
           ...shift,
@@ -772,6 +813,7 @@ export default function App() {
       console.error('Failed to delete task from Firebase:', err);
       // If network disconnected, remove locally and enqueue for sync
       if (!isDeviceOnline()) {
+        addDeletedTaskIds([taskId]);
         setTasks((prev) => prev.filter((t) => t.id !== taskId));
         removeTasksFromLocalCache([taskId]);
         await executeTaskOperationWithQueue({
@@ -813,6 +855,7 @@ export default function App() {
     try {
       if (taskIds.length > 0) {
         await batchDeleteTasksFromFirebase(taskIds);
+        addDeletedTaskIds(taskIds);
         removeTasksFromLocalCache(taskIds);
       }
 
@@ -840,6 +883,7 @@ export default function App() {
     } catch (err: any) {
       console.error('Failed to delete checklist from Firebase:', err);
       if (!isDeviceOnline()) {
+        addDeletedTaskIds(taskIds);
         setTasks((prev) =>
           prev.filter((t) => getTaskChecklistGroup(t) !== headerName && (t.checklistHeader || 'General Operations') !== headerName)
         );
@@ -881,14 +925,17 @@ export default function App() {
       // 1. Direct permanent batch deletion from Firestore via writeBatch
       await batchDeleteTasksFromFirebase(taskIds);
 
-      // 2. Remove from React state upon successful deletion
+      // 2. Mark task IDs permanently deleted
+      addDeletedTaskIds(taskIds);
+
+      // 3. Remove from React state upon successful deletion
       const idSet = new Set(taskIds);
       setTasks((prev) => prev.filter((t) => !idSet.has(t.id)));
 
-      // 3. Immediately purge from local caches
+      // 4. Immediately purge from local caches
       removeTasksFromLocalCache(taskIds);
 
-      // 4. Update shift history records in state
+      // 5. Update shift history records in state
       setHistory((prev) =>
         prev.map((shift) => ({
           ...shift,
@@ -907,6 +954,7 @@ export default function App() {
       console.error('Failed to batch delete tasks from Firebase:', err);
       if (!isDeviceOnline()) {
         const idSet = new Set(taskIds);
+        addDeletedTaskIds(taskIds);
         setTasks((prev) => prev.filter((t) => !idSet.has(t.id)));
         removeTasksFromLocalCache(taskIds);
         await executeTaskOperationWithQueue({
@@ -2640,10 +2688,10 @@ export default function App() {
     });
   }, [stationTasks, currentStation, deletedChecklistHeaders, getTaskChecklistGroup]);
 
-  // Automatically ensure questions exist for a selected Parent Checklist
+  // Explicitly load questions for a selected Parent Checklist on user demand
   const handleEnsureChecklistTasks = useCallback(
     (headerName: string) => {
-      if (headerName === 'all') return;
+      if (headerName === 'all' || deletedChecklistHeaders.includes(headerName)) return;
       const exists = tasks.some(
         (t) =>
           !t.id?.startsWith('finalized-') &&
@@ -2679,7 +2727,7 @@ export default function App() {
         );
       }
     },
-    [tasks, currentStation, activeOutlet, getTaskChecklistGroup]
+    [tasks, currentStation, activeOutlet, deletedChecklistHeaders, getTaskChecklistGroup]
   );
 
   // Ensure active selected checklist matches the current station's available parent checklists
@@ -2690,13 +2738,10 @@ export default function App() {
         if (!isFound) {
           const nextHeader = parentChecklistsList[0].headerName;
           setSelectedParentChecklist(nextHeader);
-          handleEnsureChecklistTasks(nextHeader);
-        } else {
-          handleEnsureChecklistTasks(selectedParentChecklist);
         }
       }
     }
-  }, [currentStation, parentChecklistsList, selectedParentChecklist, handleEnsureChecklistTasks]);
+  }, [currentStation, parentChecklistsList, selectedParentChecklist]);
 
   // STABLE TAB COUNTS: Always accurate, consistent, and scoped to selected Parent Checklist
   const tabCounts = useMemo(() => {
