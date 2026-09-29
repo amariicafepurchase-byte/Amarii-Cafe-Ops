@@ -388,16 +388,45 @@ export async function batchSaveTasksToFirebase(tasks: TaskItem[]): Promise<void>
   }
 }
 
-// Delete a task
+// Clean deleted tasks from localStorage caches immediately
+export function removeTasksFromLocalCache(taskIds: string[]) {
+  if (!taskIds || taskIds.length === 0) return;
+  const idSet = new Set(taskIds);
+  try {
+    const raw = localStorage.getItem('amarii_tasks_cache');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const filtered = parsed.filter((t: any) => t && t.id && !idSet.has(t.id));
+        localStorage.setItem('amarii_tasks_cache', JSON.stringify(filtered));
+      }
+    }
+  } catch (e) {}
+
+  try {
+    const rawOffline = localStorage.getItem('amarii_offline_tasks_cache_v1');
+    if (rawOffline) {
+      const parsed = JSON.parse(rawOffline);
+      if (Array.isArray(parsed)) {
+        const filtered = parsed.filter((t: any) => t && t.id && !idSet.has(t.id));
+        localStorage.setItem('amarii_offline_tasks_cache_v1', JSON.stringify(filtered));
+      }
+    }
+  } catch (e) {}
+}
+
+// Delete a task permanently from Firestore & local caches
 export async function deleteTaskFromFirebase(taskId: string): Promise<void> {
   if (!taskId) return;
+  removeTasksFromLocalCache([taskId]);
   const taskRef = doc(db, TASKS_COLLECTION, taskId);
   await deleteDoc(taskRef);
 }
 
-// Batch delete multiple tasks from Firestore (chunked under the 500 batch limit)
+// Batch delete multiple tasks from Firestore & local caches (chunked under the 500 batch limit)
 export async function batchDeleteTasksFromFirebase(taskIds: string[]): Promise<void> {
   if (!taskIds || taskIds.length === 0) return;
+  removeTasksFromLocalCache(taskIds);
   const BATCH_SIZE = 400;
 
   for (let i = 0; i < taskIds.length; i += BATCH_SIZE) {
@@ -412,6 +441,23 @@ export async function batchDeleteTasksFromFirebase(taskIds: string[]): Promise<v
 
     await batch.commit();
   }
+}
+
+// Delete a shift snapshot from Firestore
+export async function deleteShiftFromFirebase(shiftId: string): Promise<void> {
+  if (!shiftId) return;
+  try {
+    const raw = localStorage.getItem('amarii_shift_history_cache');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const filtered = parsed.filter((s: any) => s && s.id !== shiftId);
+        localStorage.setItem('amarii_shift_history_cache', JSON.stringify(filtered));
+      }
+    }
+  } catch (e) {}
+  const shiftRef = doc(db, SHIFTS_COLLECTION, shiftId);
+  await deleteDoc(shiftRef);
 }
 
 // Toggle or update task completion (uses setDoc with merge: true to avoid 'No document to update')

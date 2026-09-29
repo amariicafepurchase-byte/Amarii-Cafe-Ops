@@ -107,6 +107,7 @@ import {
   batchSaveTasksToFirebase,
   deleteTaskFromFirebase,
   batchDeleteTasksFromFirebase,
+  removeTasksFromLocalCache,
   updateTaskCompletion,
   updateTaskNoteInFirebase,
   updateTaskMediaInFirebase,
@@ -724,46 +725,71 @@ export default function App() {
     }
   };
 
-  // Delete a task (Admin and Manager)
+  // Delete a task (Admin and Manager) with permanent Firestore deletion & cache purge
   const handleDeleteTask = async (taskId: string) => {
     if (!taskId) {
       console.error('handleDeleteTask: taskId is missing or invalid');
       return;
     }
     if (!canDeleteTask) {
-      alert('Access Denied: Only Administrator and Manager accounts can delete tasks.');
+      setToastFeedback({
+        id: `toast-err-${Date.now()}`,
+        text: 'Access Denied: Only Administrator and Manager accounts can delete tasks.',
+        type: 'error',
+      });
       return;
     }
 
-    // Capture task title for clear confirmation toast
     const taskToDelete = tasks.find((t) => t.id === taskId);
     const taskTitle = taskToDelete?.title || 'Checklist task';
 
-    // 1. Instantly remove from local UI state so the card disappears immediately
-    setTasks((prev) => prev.filter((t) => t.id !== taskId));
-
-    // 2. Immediate feedback toast
-    setToastFeedback({
-      id: `toast-del-${Date.now()}`,
-      text: `Checklist "${taskTitle}" deleted successfully.`,
-      type: 'success',
-    });
-
-    // 3. Remove using offline-resilient local queue
     try {
-      const res = await executeTaskOperationWithQueue({
-        type: 'DELETE_TASK',
-        taskId,
+      // 1. Direct permanent deletion from Firestore via deleteDoc
+      await deleteTaskFromFirebase(taskId);
+
+      // 2. Remove from React state upon successful deletion
+      setTasks((prev) => prev.filter((t) => t.id !== taskId));
+
+      // 3. Immediately purge from local caches
+      removeTasksFromLocalCache([taskId]);
+
+      // 4. Update shift history records in state
+      setHistory((prev) =>
+        prev.map((shift) => ({
+          ...shift,
+          tasks: (shift.tasks || []).filter((st) => st.id !== taskId),
+          completedTasks: (shift.tasks || []).filter((st) => st.id !== taskId && st.completed).length,
+          totalTasks: (shift.tasks || []).filter((st) => st.id !== taskId).length,
+        }))
+      );
+
+      setToastFeedback({
+        id: `toast-del-${Date.now()}`,
+        text: `✓ Checklist "${taskTitle}" permanently deleted from database.`,
+        type: 'success',
       });
-      if (res.queued && !res.synced) {
+    } catch (err: any) {
+      console.error('Failed to delete task from Firebase:', err);
+      // If network disconnected, remove locally and enqueue for sync
+      if (!isDeviceOnline()) {
+        setTasks((prev) => prev.filter((t) => t.id !== taskId));
+        removeTasksFromLocalCache([taskId]);
+        await executeTaskOperationWithQueue({
+          type: 'DELETE_TASK',
+          taskId,
+        });
         setToastFeedback({
           id: `toast-del-queue-${Date.now()}`,
-          text: `"${taskTitle}" removed locally & queued for Firestore auto-sync.`,
+          text: `Offline Mode: "${taskTitle}" removed locally & queued for Firestore auto-sync.`,
           type: 'info',
         });
+      } else {
+        setToastFeedback({
+          id: `toast-del-err-${Date.now()}`,
+          text: `Failed to delete from database: ${err?.message || 'Check database connection'}.`,
+          type: 'error',
+        });
       }
-    } catch (err) {
-      console.error('Failed to queue task deletion:', err);
     }
   };
 
@@ -784,52 +810,62 @@ export default function App() {
     );
     const taskIds = tasksToDelete.map((t) => t.id);
 
-    // 1. Remove tasks from local state
-    setTasks((prev) =>
-      prev.filter((t) => getTaskChecklistGroup(t) !== headerName && (t.checklistHeader || 'General Operations') !== headerName)
-    );
-
-    // 2. Persist deleted header so empty/default templates don't reappear
-    setDeletedChecklistHeaders((prev) => {
-      const updated = prev.includes(headerName) ? prev : [...prev, headerName];
-      try {
-        localStorage.setItem('amarii_deleted_checklist_headers', JSON.stringify(updated));
-      } catch (e) {
-        console.warn('Could not save deleted checklists to localStorage:', e);
+    try {
+      if (taskIds.length > 0) {
+        await batchDeleteTasksFromFirebase(taskIds);
+        removeTasksFromLocalCache(taskIds);
       }
-      return updated;
-    });
 
-    // 3. Immediate feedback toast
-    setToastFeedback({
-      id: `toast-del-chk-${Date.now()}`,
-      text: `Checklist "${headerName}" ${
-        taskIds.length > 0 ? `and its ${taskIds.length} tasks ` : ''
-      }deleted successfully.`,
-      type: 'success',
-    });
+      // Remove from state
+      setTasks((prev) =>
+        prev.filter((t) => getTaskChecklistGroup(t) !== headerName && (t.checklistHeader || 'General Operations') !== headerName)
+      );
 
-    // 4. Batch delete via offline-resilient queue
-    if (taskIds.length > 0) {
-      try {
-        const res = await executeTaskOperationWithQueue({
-          type: 'BATCH_DELETE_TASKS',
-          taskIds,
-        });
-        if (res.queued && !res.synced) {
-          setToastFeedback({
-            id: `toast-del-chk-queue-${Date.now()}`,
-            text: `Checklist deleted locally & queued for Firestore auto-sync.`,
-            type: 'info',
+      // Persist deleted header so empty/default templates don't reappear
+      setDeletedChecklistHeaders((prev) => {
+        const updated = prev.includes(headerName) ? prev : [...prev, headerName];
+        try {
+          localStorage.setItem('amarii_deleted_checklist_headers', JSON.stringify(updated));
+        } catch (e) {
+          console.warn('Could not save deleted checklists to localStorage:', e);
+        }
+        return updated;
+      });
+
+      setToastFeedback({
+        id: `toast-del-chk-${Date.now()}`,
+        text: `✓ Checklist "${headerName}" and its ${taskIds.length} tasks permanently deleted.`,
+        type: 'success',
+      });
+    } catch (err: any) {
+      console.error('Failed to delete checklist from Firebase:', err);
+      if (!isDeviceOnline()) {
+        setTasks((prev) =>
+          prev.filter((t) => getTaskChecklistGroup(t) !== headerName && (t.checklistHeader || 'General Operations') !== headerName)
+        );
+        removeTasksFromLocalCache(taskIds);
+        if (taskIds.length > 0) {
+          await executeTaskOperationWithQueue({
+            type: 'BATCH_DELETE_TASKS',
+            taskIds,
           });
         }
-      } catch (err) {
-        console.error('Failed to queue batch delete checklist tasks:', err);
+        setToastFeedback({
+          id: `toast-del-chk-queue-${Date.now()}`,
+          text: `Offline: Checklist deleted locally & queued for Firestore auto-sync.`,
+          type: 'info',
+        });
+      } else {
+        setToastFeedback({
+          id: `toast-del-chk-err-${Date.now()}`,
+          text: `Failed to delete checklist: ${err?.message || 'Check database connection'}.`,
+          type: 'error',
+        });
       }
     }
   };
 
-  // Batch delete tasks (selected tasks from directory)
+  // Batch delete tasks (selected tasks from directory & Master Register)
   const handleBatchDeleteTasks = async (taskIds: string[]) => {
     if (!taskIds || taskIds.length === 0) return;
     if (!canDeleteTask) {
@@ -841,28 +877,54 @@ export default function App() {
       return;
     }
 
-    setTasks((prev) => prev.filter((t) => !taskIds.includes(t.id)));
-
-    setToastFeedback({
-      id: `toast-batch-del-${Date.now()}`,
-      text: `Deleted ${taskIds.length} tasks successfully.`,
-      type: 'success',
-    });
-
     try {
-      const res = await executeTaskOperationWithQueue({
-        type: 'BATCH_DELETE_TASKS',
-        taskIds,
+      // 1. Direct permanent batch deletion from Firestore via writeBatch
+      await batchDeleteTasksFromFirebase(taskIds);
+
+      // 2. Remove from React state upon successful deletion
+      const idSet = new Set(taskIds);
+      setTasks((prev) => prev.filter((t) => !idSet.has(t.id)));
+
+      // 3. Immediately purge from local caches
+      removeTasksFromLocalCache(taskIds);
+
+      // 4. Update shift history records in state
+      setHistory((prev) =>
+        prev.map((shift) => ({
+          ...shift,
+          tasks: (shift.tasks || []).filter((st) => !idSet.has(st.id)),
+          completedTasks: (shift.tasks || []).filter((st) => !idSet.has(st.id) && st.completed).length,
+          totalTasks: (shift.tasks || []).filter((st) => !idSet.has(st.id)).length,
+        }))
+      );
+
+      setToastFeedback({
+        id: `toast-batch-del-${Date.now()}`,
+        text: `✓ ${taskIds.length} tasks permanently deleted from database.`,
+        type: 'success',
       });
-      if (res.queued && !res.synced) {
+    } catch (err: any) {
+      console.error('Failed to batch delete tasks from Firebase:', err);
+      if (!isDeviceOnline()) {
+        const idSet = new Set(taskIds);
+        setTasks((prev) => prev.filter((t) => !idSet.has(t.id)));
+        removeTasksFromLocalCache(taskIds);
+        await executeTaskOperationWithQueue({
+          type: 'BATCH_DELETE_TASKS',
+          taskIds,
+        });
         setToastFeedback({
           id: `toast-batch-del-queue-${Date.now()}`,
-          text: `Deleted locally; ${taskIds.length} tasks queued for Firestore auto-sync.`,
+          text: `Offline Mode: ${taskIds.length} tasks deleted locally & queued for Firestore auto-sync.`,
           type: 'info',
         });
+      } else {
+        setToastFeedback({
+          id: `toast-batch-del-err-${Date.now()}`,
+          text: `Failed to delete tasks: ${err?.message || 'Check database connection'}.`,
+          type: 'error',
+        });
       }
-    } catch (err) {
-      console.error('Failed to queue batch delete tasks:', err);
     }
   };
 
@@ -1162,19 +1224,44 @@ export default function App() {
     }
     if (!taskIds || taskIds.length === 0) return;
 
-    // Immediately remove from local UI state
-    setTasks((prev) => prev.filter((t) => !taskIds.includes(t.id)));
-
-    // Batch delete via offline queue
     try {
-      await executeTaskOperationWithQueue({
-        type: 'BATCH_DELETE_TASKS',
-        taskIds,
+      // 1. Await Firestore batch deletion
+      await batchDeleteTasksFromFirebase(taskIds);
+
+      // 2. Remove from React state
+      setTasks((prev) => prev.filter((t) => !taskIds.includes(t.id)));
+
+      // 3. Immediately clean local cache
+      removeTasksFromLocalCache(taskIds);
+
+      console.log(`Successfully batch deleted ${taskIds.length} tasks from Firestore (${cleanupLabel})`);
+      setToastFeedback({
+        id: `toast-cleanup-success-${Date.now()}`,
+        text: `✓ Cleaned up ${taskIds.length} old tasks permanently from database.`,
+        type: 'success',
       });
-      console.log(`Successfully queued batch deletion for ${taskIds.length} tasks (${cleanupLabel})`);
-    } catch (err) {
-      console.error('Failed to batch delete tasks via queue:', err);
-      throw err;
+    } catch (err: any) {
+      console.error('Failed to batch delete tasks via Firebase:', err);
+      if (!isDeviceOnline()) {
+        setTasks((prev) => prev.filter((t) => !taskIds.includes(t.id)));
+        removeTasksFromLocalCache(taskIds);
+        await executeTaskOperationWithQueue({
+          type: 'BATCH_DELETE_TASKS',
+          taskIds,
+        });
+        setToastFeedback({
+          id: `toast-cleanup-offline-${Date.now()}`,
+          text: `Offline: ${taskIds.length} tasks removed locally & queued for sync.`,
+          type: 'info',
+        });
+      } else {
+        setToastFeedback({
+          id: `toast-cleanup-err-${Date.now()}`,
+          text: `Failed to clean up tasks: ${err?.message || 'Database error'}.`,
+          type: 'error',
+        });
+        throw err;
+      }
     }
   };
 
