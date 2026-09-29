@@ -619,9 +619,6 @@ export default function App() {
     // 1. Immediately subscribe to staff in real time
     unsubscribeStaff = subscribeToStaff(
       (liveStaff, fromCache) => {
-        console.log(
-          `[App] Real-time staff listener updated: ${liveStaff.length} members (fromCache: ${Boolean(fromCache)})`
-        );
         if (liveStaff && liveStaff.length > 0) {
           setStaffList(liveStaff);
           setSyncedStaffCount(liveStaff.length);
@@ -637,18 +634,14 @@ export default function App() {
         setLastSyncTimestamp(new Date().toISOString());
       },
       (err) => {
-        console.error('[App] Error in real-time staff listener:', err);
+        console.warn('[App] Real-time staff listener note (offline cache active):', err.message);
         setLastFirestoreError(err?.message || 'Staff subscription error');
-        setFirestoreConnectionState('error');
       }
     );
 
     // 2. Immediately subscribe to tasks in real time
     unsubscribeTasks = subscribeToTasks(
       (liveTasks, fromCache) => {
-        console.log(
-          `[App] Real-time tasks listener updated: ${liveTasks.length} tasks (fromCache: ${Boolean(fromCache)})`
-        );
         if (liveTasks && liveTasks.length > 0) {
           const normalized = normalizeTasks(liveTasks);
           setTasks(normalized);
@@ -660,9 +653,8 @@ export default function App() {
         setLastSyncTimestamp(new Date().toISOString());
       },
       (err) => {
-        console.error('[App] Error in real-time tasks listener:', err);
+        console.warn('[App] Real-time tasks listener note (offline cache active):', err.message);
         setLastFirestoreError(err?.message || 'Tasks subscription error');
-        setFirestoreConnectionState('error');
       }
     );
 
@@ -673,7 +665,7 @@ export default function App() {
         setSyncedShiftsCount(liveShifts ? liveShifts.length : 0);
       },
       (err) => {
-        console.warn('[App] Error in shifts listener:', err);
+        console.warn('[App] Error in shifts listener:', err.message);
       }
     );
 
@@ -682,27 +674,9 @@ export default function App() {
       setDeletedChecklistHeaders(deletedHeaders);
     });
 
-    // 5. Initial explicit fetch for instant cache hydration
-    fetchStaffOnce()
-      .then((items) => {
-        if (items && items.length > 0) {
-          setStaffList(items);
-          setSyncedStaffCount(items.length);
-          try {
-            localStorage.setItem('amarii_staff_list_cache', JSON.stringify(items));
-          } catch (e) {}
-        }
-      })
-      .catch((err) => console.warn('App initial staff fetch note:', err));
-
-    // 6. Run background bootstrap seed (only seeds if collections are completely empty)
+    // 5. Initial bootstrap seed (only executes once per browser session if collection is completely unseeded)
     seedInitialTasksIfEmpty(INITIAL_DAILY_TASKS, INITIAL_STAFF).catch((err) => {
       console.warn('Firebase bootstrap seed notice:', err);
-    });
-
-    // 7. Purge any leftover legacy dummy staff so only real staff exist
-    purgeLegacyDemoStaffFromFirestore().catch((err) => {
-      console.warn('Staff purge notice:', err);
     });
 
     return () => {
@@ -3099,6 +3073,11 @@ export default function App() {
               onEditTask={handleEditTask}
               onApproveTask={handleApproveTask}
               onRejectTask={handleRejectTask}
+              onDeleteTask={handleDeleteTask}
+              onBatchDeleteTasks={handleBatchDeleteTasks}
+              onBatchApproveTasks={(ids) => {
+                ids.forEach((id) => handleApproveTask(id));
+              }}
               onViewMedia={setSelectedMedia}
             />
           </div>
@@ -4171,6 +4150,23 @@ export default function App() {
         onForceResync={async () => {
           await handlePullToRefresh();
         }}
+      />
+
+      {/* Master Task Register & Historical Audits Modal */}
+      <TaskRegisterModal
+        isOpen={isTaskRegisterOpen}
+        onClose={() => setIsTaskRegisterOpen(false)}
+        tasks={tasks}
+        staffList={staffList}
+        onEditTask={handleEditTask}
+        onApproveTask={handleApproveTask}
+        onRejectTask={handleRejectTask}
+        onDeleteTask={handleDeleteTask}
+        onBatchDeleteTasks={handleBatchDeleteTasks}
+        onBatchApproveTasks={(ids) => {
+          ids.forEach((id) => handleApproveTask(id));
+        }}
+        onViewMedia={setSelectedMedia}
       />
     </div>
   );

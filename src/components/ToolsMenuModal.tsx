@@ -167,8 +167,8 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
 
         {/* Menu Options */}
         <div className="p-3 space-y-1.5">
-          {/* Master Task Register & Audit Ledger (Hemen Das & Managers) */}
-          {(isAdmin || isManager) && onOpenTaskRegister && (
+          {/* Master Task Register & Audit Records Modal Quick Access */}
+          {onOpenTaskRegister && (
             <button
               type="button"
               id="tools-task-register-btn"
@@ -182,18 +182,18 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
                   : 'bg-red-950/40 hover:bg-red-900/60 border-red-800 text-red-200'
               }`}
             >
-              <div className="p-2 rounded bg-red-600 text-white">
+              <div className="p-2 rounded bg-red-600 text-white shadow-xs shrink-0">
                 <ClipboardList className="w-4 h-4 stroke-[2.5]" />
               </div>
-              <div className="flex-1">
-                <div className="font-black uppercase text-[11px] tracking-tight flex items-center justify-between">
-                  <span>📋 Master Task Register (टास्क रजिस्टर)</span>
-                  <span className="text-[9px] font-bold bg-red-600 text-white px-1.5 py-0.2 rounded-xs">
-                    HEMEN DAS
+              <div className="flex-1 min-w-0">
+                <div className="font-black uppercase text-[11px] tracking-tight flex items-center justify-between gap-1">
+                  <span className="truncate">📋 Master Task Register & Audits</span>
+                  <span className="text-[9px] font-bold bg-red-600 text-white px-1.5 py-0.2 rounded-xs shrink-0">
+                    AUDIT HUB
                   </span>
                 </div>
-                <div className="text-[10px] text-zinc-500 font-normal">
-                  All tasks ledger with dates, months, assignees, outcomes & 1-click export
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 font-normal truncate mt-0.5">
+                  Quick access to all checklist records, submitted forms, Yes/No audit logs & PDFs
                 </div>
               </div>
             </button>

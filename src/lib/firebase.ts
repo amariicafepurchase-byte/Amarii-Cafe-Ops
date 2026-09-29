@@ -120,7 +120,19 @@ export function subscribeToOutlets(onUpdate: (outlets: Outlet[], fromCache?: boo
       }
     },
     (err) => {
-      console.error('[Firestore] Error listening to outlets in Firestore:', err);
+      console.warn('[Firestore] Outlets listener note (falling back to cache/defaults):', err.message);
+      try {
+        const cached = localStorage.getItem('amarii_outlets_cache');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            onUpdate(parsed, true);
+            if (onError) onError(err);
+            return;
+          }
+        }
+      } catch (e) {}
+      onUpdate(INITIAL_OUTLETS, true);
       if (onError) onError(err);
     }
   );
@@ -140,9 +152,23 @@ export function subscribeToTasks(onUpdate: (tasks: TaskItem[], fromCache?: boole
         items.push({ id: d.id, ...(d.data() as Omit<TaskItem, 'id'>) });
       });
       onUpdate(items, snapshot.metadata.fromCache);
+      try {
+        if (items.length > 0) {
+          localStorage.setItem('amarii_tasks_cache', JSON.stringify(items));
+        }
+      } catch (e) {}
     },
     (err) => {
-      console.error('[Firestore DEBUG] Error in subscribeToTasks listener:', err);
+      console.warn('[Firestore DEBUG] Tasks listener note (falling back to local cache):', err.message);
+      try {
+        const cached = localStorage.getItem('amarii_tasks_cache');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            onUpdate(parsed, true);
+          }
+        }
+      } catch (e) {}
       if (onError) onError(err);
     }
   );
@@ -232,8 +258,7 @@ export function subscribeToStaff(onUpdate: (staff: StaffMember[], fromCache?: bo
         const isArjun = staffName.includes('arjun') || staffId === 'staff-admin-arjun';
 
         if (isArjun) {
-          // Immediately purge demo Arjun Kapoor from Firestore permanently
-          deleteDoc(d.ref).catch(() => {});
+          // Filter out legacy demo staff in-memory without calling deleteDoc inside snapshot
           return;
         }
 
@@ -248,10 +273,22 @@ export function subscribeToStaff(onUpdate: (staff: StaffMember[], fromCache?: bo
       } else {
         // Use the actual live staff directly from Firestore
         onUpdate(items, snapshot.metadata.fromCache);
+        try {
+          localStorage.setItem('amarii_staff_list_cache', JSON.stringify(items));
+        } catch (e) {}
       }
     },
     (err) => {
-      console.error('[Firestore DEBUG] Error in subscribeToStaff listener:', err);
+      console.warn('[Firestore DEBUG] Staff listener note (falling back to local cache):', err.message);
+      try {
+        const cached = localStorage.getItem('amarii_staff_list_cache');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            onUpdate(parsed, true);
+          }
+        }
+      } catch (e) {}
       if (onError) onError(err);
     }
   );
@@ -269,9 +306,23 @@ export function subscribeToShifts(onUpdate: (shifts: ShiftRecord[]) => void, onE
       });
       items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       onUpdate(items);
+      try {
+        if (items.length > 0) {
+          localStorage.setItem('amarii_shift_history_cache', JSON.stringify(items));
+        }
+      } catch (e) {}
     },
     (err) => {
-      console.error('[Firestore] Error listening to shifts in Firestore:', err);
+      console.warn('[Firestore] Shifts listener note (falling back to local cache):', err.message);
+      try {
+        const cached = localStorage.getItem('amarii_shift_history_cache');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            onUpdate(parsed);
+          }
+        }
+      } catch (e) {}
       if (onError) onError(err);
     }
   );
@@ -604,8 +655,9 @@ export async function cleanupMismatchedOutletsInFirestore() {
 // Seed initial outlets if collection is empty or only had dummy/mismatched outlets
 export async function seedInitialOutletsIfEmpty(initialOutlets: Outlet[]) {
   try {
-    await purgeLegacyDemoOutletsFromFirestore();
-    await cleanupMismatchedOutletsInFirestore();
+    if (typeof window !== 'undefined' && localStorage.getItem('amarii_outlets_seeded_v3') === 'true') {
+      return;
+    }
     const snapshot = await getDocs(collection(db, OUTLETS_COLLECTION));
     if (snapshot.empty) {
       console.log('Seeding initial outlets (Kothrud & Aundh) into Firestore...');
@@ -616,15 +668,9 @@ export async function seedInitialOutletsIfEmpty(initialOutlets: Outlet[]) {
         batch.set(outletRef, sanitizeForFirestore(o), { merge: true });
       });
       await batch.commit();
-    } else {
-      // Ensure Kothrud and Aundh documents are synced to Firestore
-      const batch = writeBatch(db);
-      initialOutlets.forEach((o) => {
-        if (!o || !o.id) return;
-        const outletRef = doc(db, OUTLETS_COLLECTION, o.id);
-        batch.set(outletRef, sanitizeForFirestore(o), { merge: true });
-      });
-      await batch.commit();
+    }
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('amarii_outlets_seeded_v3', 'true');
     }
   } catch (err) {
     console.warn('Firestore outlet seed check notice:', err);
@@ -634,6 +680,9 @@ export async function seedInitialOutletsIfEmpty(initialOutlets: Outlet[]) {
 // Purge demo tasks so only custom user tasks exist
 export async function purgeDemoTasksFromFirestore() {
   try {
+    if (typeof window !== 'undefined' && localStorage.getItem('amarii_demo_tasks_purged_v3') === 'true') {
+      return;
+    }
     const tasksSnapshot = await getDocs(collection(db, TASKS_COLLECTION));
     const batch = writeBatch(db);
     let demoCount = 0;
@@ -657,6 +706,9 @@ export async function purgeDemoTasksFromFirestore() {
       await batch.commit();
       console.log(`Purged ${demoCount} demo tasks from Firestore.`);
     }
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('amarii_demo_tasks_purged_v3', 'true');
+    }
   } catch (err) {
     console.warn('Demo purge warning:', err);
   }
@@ -665,6 +717,9 @@ export async function purgeDemoTasksFromFirestore() {
 // Purge legacy demo staff so only real staff exist
 export async function purgeLegacyDemoStaffFromFirestore() {
   try {
+    if (typeof window !== 'undefined' && localStorage.getItem('amarii_staff_purged_v3') === 'true') {
+      return;
+    }
     const staffSnapshot = await getDocs(collection(db, STAFF_COLLECTION));
     const batch = writeBatch(db);
     let count = 0;
@@ -683,21 +738,12 @@ export async function purgeLegacyDemoStaffFromFirestore() {
       }
     });
 
-    // Also check users collection directly for legacy demo IDs
-    try {
-      const usersSnapshot = await getDocs(collection(db, USERS_COLLECTION));
-      usersSnapshot.forEach((u) => {
-        const uName = (u.data()?.name || '').toLowerCase();
-        if (LEGACY_DEMO_STAFF_IDS.includes(u.id) || uName.includes('arjun')) {
-          batch.delete(u.ref);
-          count++;
-        }
-      });
-    } catch {}
-
     if (count > 0) {
       await batch.commit();
       console.log(`Purged ${count} legacy demo staff members from Firestore.`);
+    }
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('amarii_staff_purged_v3', 'true');
     }
   } catch (err) {
     console.warn('Staff purge warning:', err);
@@ -811,21 +857,16 @@ export async function syncAllStaffAndUsersToFirestore(staffList?: StaffMember[])
 // Check if tasks collection is empty and seed once; never re-seed deleted tasks or overwrite staff passwords
 export async function seedInitialTasksIfEmpty(initialTasks: TaskItem[], initialStaff: StaffMember[]) {
   try {
+    if (typeof window !== 'undefined' && localStorage.getItem('amarii_tasks_seeded_v3') === 'true') {
+      return;
+    }
     const metaDocRef = doc(db, 'system_meta', 'seed_state');
     let hasSeeded = false;
 
     try {
-      if (typeof window !== 'undefined' && localStorage.getItem('amarii_tasks_seeded') === 'true') {
+      const metaSnap = await getDoc(metaDocRef);
+      if (metaSnap.exists() && metaSnap.data()?.tasksSeeded) {
         hasSeeded = true;
-      }
-      if (!hasSeeded) {
-        const metaSnap = await getDoc(metaDocRef);
-        if (metaSnap.exists() && metaSnap.data()?.tasksSeeded) {
-          hasSeeded = true;
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('amarii_tasks_seeded', 'true');
-          }
-        }
       }
     } catch (metaErr) {
       console.warn('Meta seed check warning:', metaErr);
@@ -842,29 +883,13 @@ export async function seedInitialTasksIfEmpty(initialTasks: TaskItem[], initialS
       }
       // Record seed marker so deleted checklists/tasks are NEVER re-injected
       await setDoc(metaDocRef, { tasksSeeded: true, seededAt: new Date().toISOString() }, { merge: true });
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('amarii_tasks_seeded', 'true');
-      }
-
-      // Purge any legacy demo tasks from Firestore once during setup
       await purgeDemoTasksFromFirestore();
-
-      // Purge any legacy demo staff from Firestore once during setup
       await purgeLegacyDemoStaffFromFirestore();
-
-      // First run only: ensure initial staff exist
       await syncAllStaffAndUsersToFirestore(initialStaff);
-    } else {
-      // If already seeded, check if any core staff is missing without overwriting existing staff passwords
-      try {
-        const existingSnap = await getDocs(collection(db, STAFF_COLLECTION));
-        if (existingSnap.empty) {
-          console.log('[Firestore] Staff collection empty, initializing staff...');
-          await syncAllStaffAndUsersToFirestore(initialStaff);
-        }
-      } catch (checkErr) {
-        console.warn('Staff existence check warning:', checkErr);
-      }
+    }
+
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('amarii_tasks_seeded_v3', 'true');
     }
   } catch (err) {
     console.warn('Firestore seed check notice:', err);

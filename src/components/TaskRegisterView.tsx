@@ -31,6 +31,11 @@ import {
   List,
   Share2,
   Loader2,
+  Trash2,
+  X,
+  CheckSquare,
+  Square,
+  MinusSquare,
 } from 'lucide-react';
 import { TaskItem, StaffMember, TaskDepartment, TaskMedia } from '../types';
 import { useTheme } from '../context/ThemeContext';
@@ -46,6 +51,9 @@ interface TaskRegisterViewProps {
   onEditTask?: (task: TaskItem) => void;
   onApproveTask?: (taskId: string) => void;
   onRejectTask?: (taskId: string, reason: string) => void;
+  onDeleteTask?: (taskId: string) => void;
+  onBatchDeleteTasks?: (taskIds: string[]) => void;
+  onBatchApproveTasks?: (taskIds: string[]) => void;
   onViewMedia?: (media: TaskMedia) => void;
   onClose?: () => void;
   isModalMode?: boolean;
@@ -57,6 +65,9 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
   onEditTask,
   onApproveTask,
   onRejectTask,
+  onDeleteTask,
+  onBatchDeleteTasks,
+  onBatchApproveTasks,
   onViewMedia,
   onClose,
   isModalMode = false,
@@ -80,6 +91,11 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
   const [registerLayout, setRegisterLayout] = useState<'table' | 'list'>('table');
   const [shareToastMsg, setShareToastMsg] = useState<string | null>(null);
   const [downloadingTaskId, setDownloadingTaskId] = useState<string | null>(null);
+
+  // Bulk Selection & Deletion Management States
+  const [selectedRecordIds, setSelectedRecordIds] = useState<Set<string>>(new Set());
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [isConfirmingBulkDelete, setIsConfirmingBulkDelete] = useState<boolean>(false);
 
   // Exact Read-Only Audit Mode Modal State
   const [auditModalData, setAuditModalData] = useState<{
@@ -270,6 +286,81 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
 
     return { total, completed, breached, pending, approved, rejected, onTimeRate: Math.max(0, onTimeRate) };
   }, [filteredEntries]);
+
+  // Bulk Selection Computed States & Helpers
+  const isAllSelected = useMemo(() => {
+    return filteredEntries.length > 0 && filteredEntries.every((e) => selectedRecordIds.has(e.task.id));
+  }, [filteredEntries, selectedRecordIds]);
+
+  const isSomeSelected = useMemo(() => {
+    return filteredEntries.some((e) => selectedRecordIds.has(e.task.id));
+  }, [filteredEntries, selectedRecordIds]);
+
+  const toggleSelectRecord = (id: string) => {
+    setSelectedRecordIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (isAllSelected) {
+      setSelectedRecordIds(new Set());
+    } else {
+      const allIds = filteredEntries.map((e) => e.task.id).filter(Boolean);
+      setSelectedRecordIds(new Set(allIds));
+    }
+  };
+
+  const handleSingleDelete = (taskId: string) => {
+    if (onDeleteTask) {
+      onDeleteTask(taskId);
+      setSelectedRecordIds((prev) => {
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
+      setShareToastMsg('✓ Record permanently deleted.');
+      setTimeout(() => setShareToastMsg(null), 3500);
+    }
+    setConfirmDeleteId(null);
+  };
+
+  const handleExecuteBulkDelete = () => {
+    const ids = Array.from(selectedRecordIds);
+    if (ids.length === 0) return;
+
+    if (onBatchDeleteTasks) {
+      onBatchDeleteTasks(ids);
+    } else if (onDeleteTask) {
+      ids.forEach((id) => onDeleteTask(id));
+    }
+
+    setSelectedRecordIds(new Set());
+    setIsConfirmingBulkDelete(false);
+    setShareToastMsg(`✓ ${ids.length} records permanently deleted.`);
+    setTimeout(() => setShareToastMsg(null), 3500);
+  };
+
+  const handleExecuteBulkApprove = () => {
+    const ids = Array.from(selectedRecordIds);
+    if (ids.length === 0) return;
+
+    if (onBatchApproveTasks) {
+      onBatchApproveTasks(ids);
+    } else if (onApproveTask) {
+      ids.forEach((id) => onApproveTask(id));
+    }
+
+    setSelectedRecordIds(new Set());
+    setShareToastMsg(`✓ ${ids.length} records approved by Hemen Das.`);
+    setTimeout(() => setShareToastMsg(null), 3500);
+  };
 
   // Export handlers
   const handleExportPdf = () => {
@@ -840,23 +931,32 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
           </div>
         ) : registerLayout === 'table' ? (
           /* ======================================================== */
-          /* 1. MODERN TABLE LAYOUT */
+          /* 1. MODERN TABLE LAYOUT WITH STICKY HEADERS */
           /* ======================================================== */
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto overflow-y-auto max-h-[68vh] sm:max-h-[75vh] relative rounded-b border border-zinc-200 dark:border-zinc-800 shadow-inner">
             <table className="w-full text-left border-collapse text-xs">
-              <thead>
+              <thead className="sticky top-0 z-20 shadow-xs">
                 <tr
-                  className={`border-b text-[11px] font-black uppercase tracking-wider ${
+                  className={`border-b-2 text-[11px] font-black uppercase tracking-wider ${
                     isLightMode
-                      ? 'bg-zinc-100/90 text-zinc-700 border-zinc-200'
-                      : 'bg-zinc-900 text-zinc-300 border-zinc-800'
+                      ? 'bg-zinc-100 text-zinc-800 border-zinc-300'
+                      : 'bg-zinc-900 text-zinc-200 border-zinc-700'
                   }`}
                 >
-                  <th className="py-3 px-3 sm:px-4">Date & Time</th>
-                  <th className="py-3 px-3 sm:px-4">Checklist & Question</th>
-                  <th className="py-3 px-3 sm:px-4">Staff Name</th>
-                  <th className="py-3 px-3 sm:px-4">Status & Outcome</th>
-                  <th className="py-3 px-3 sm:px-4 text-right">Audit Action</th>
+                  <th className={`sticky top-0 z-20 py-3 px-3 sm:px-4 w-10 text-center ${isLightMode ? 'bg-zinc-100' : 'bg-zinc-900'}`}>
+                    <input
+                      type="checkbox"
+                      aria-label="Select all records"
+                      checked={isAllSelected}
+                      onChange={toggleSelectAll}
+                      className="w-4 h-4 rounded border-zinc-400 text-red-600 focus:ring-red-500 cursor-pointer accent-red-600"
+                    />
+                  </th>
+                  <th className={`sticky top-0 z-20 py-3 px-3 sm:px-4 ${isLightMode ? 'bg-zinc-100' : 'bg-zinc-900'}`}>Date & Time</th>
+                  <th className={`sticky top-0 z-20 py-3 px-3 sm:px-4 ${isLightMode ? 'bg-zinc-100' : 'bg-zinc-900'}`}>Checklist & Question</th>
+                  <th className={`sticky top-0 z-20 py-3 px-3 sm:px-4 ${isLightMode ? 'bg-zinc-100' : 'bg-zinc-900'}`}>Staff Name</th>
+                  <th className={`sticky top-0 z-20 py-3 px-3 sm:px-4 ${isLightMode ? 'bg-zinc-100' : 'bg-zinc-900'}`}>Status & Outcome</th>
+                  <th className={`sticky top-0 z-20 py-3 px-3 sm:px-4 text-right ${isLightMode ? 'bg-zinc-100' : 'bg-zinc-900'}`}>Audit Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800/80">
@@ -880,11 +980,17 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
                     hour12: true,
                   });
 
+                  const isSelected = selectedRecordIds.has(task.id);
+
                   return (
                     <tr
                       key={`register-row-${task.id || 'no-id'}-${idx}`}
                       className={`transition-colors duration-150 ${
-                        isLightMode
+                        isSelected
+                          ? isLightMode
+                            ? 'bg-red-50/70'
+                            : 'bg-red-950/40'
+                          : isLightMode
                           ? 'hover:bg-purple-50/40 text-zinc-900'
                           : 'hover:bg-purple-950/20 text-zinc-100'
                       } ${
@@ -895,6 +1001,17 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
                           : ''
                       }`}
                     >
+                      {/* 0. Selection Checkbox Column */}
+                      <td className="py-3 px-3 sm:px-4 align-top text-center w-10">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select record ${task.title}`}
+                          checked={isSelected}
+                          onChange={() => toggleSelectRecord(task.id)}
+                          className="w-4 h-4 rounded border-zinc-400 text-red-600 focus:ring-red-500 cursor-pointer accent-red-600"
+                        />
+                      </td>
+
                       {/* 1. Date & Time */}
                       <td className="py-3 px-3 sm:px-4 align-top whitespace-nowrap">
                         <div className="font-bold text-zinc-900 dark:text-zinc-100">{dateStr}</div>
@@ -1032,6 +1149,19 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
                             <span>View Form</span>
                           </button>
 
+                          {/* Individual Delete Option (Trash Icon) */}
+                          {onDeleteTask && (
+                            <button
+                              type="button"
+                              id={`table-del-btn-${task.id}`}
+                              onClick={() => setConfirmDeleteId(task.id)}
+                              className="p-1.5 text-zinc-400 hover:text-red-500 hover:bg-red-500/10 rounded transition cursor-pointer"
+                              title="Permanently delete this record"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
                           {/* Admin Quick Governance */}
                           {isAdmin && (
                             <>
@@ -1093,15 +1223,21 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
                 hour12: true,
               });
 
+              const isSelected = selectedRecordIds.has(task.id);
+
               return (
                 <div
                   key={`register-card-${task.id || 'no-id'}-${idx}`}
-                  className={`p-4 sm:p-5 transition hover:bg-zinc-50 dark:hover:bg-zinc-900/60 ${
-                    isBreached && !task.completed
-                      ? 'border-l-4 border-l-red-600 bg-red-950/5'
+                  className={`p-4 sm:p-5 transition ${
+                    isSelected
+                      ? isLightMode
+                        ? 'bg-red-50/70 border-l-4 border-l-red-600'
+                        : 'bg-red-950/40 border-l-4 border-l-red-600'
+                      : isBreached && !task.completed
+                      ? 'border-l-4 border-l-red-600 bg-red-950/5 hover:bg-zinc-50 dark:hover:bg-zinc-900/60'
                       : task.completed
-                      ? 'border-l-4 border-l-emerald-600 bg-emerald-950/5'
-                      : 'border-l-4 border-l-purple-500'
+                      ? 'border-l-4 border-l-emerald-600 bg-emerald-950/5 hover:bg-zinc-50 dark:hover:bg-zinc-900/60'
+                      : 'border-l-4 border-l-purple-500 hover:bg-zinc-50 dark:hover:bg-zinc-900/60'
                   }`}
                 >
                   <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -1109,6 +1245,15 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
                     <div className="space-y-2 flex-1 min-w-0">
                       {/* Top Badges Row */}
                       <div className="flex flex-wrap items-center gap-2">
+                        {/* Top-Left Selection Checkbox */}
+                        <input
+                          type="checkbox"
+                          aria-label={`Select record ${task.title}`}
+                          checked={isSelected}
+                          onChange={() => toggleSelectRecord(task.id)}
+                          className="w-4 h-4 rounded border-zinc-400 text-red-600 focus:ring-red-500 cursor-pointer accent-red-600 shrink-0"
+                        />
+
                         <span className="text-[10px] font-mono font-bold text-zinc-400 bg-zinc-200 dark:bg-zinc-800 px-1.5 py-0.5 rounded">
                           #{idx + 1}
                         </span>
@@ -1219,6 +1364,19 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
                         <span>View Form</span>
                       </button>
 
+                      {/* Individual Delete Option (Trash Icon) */}
+                      {onDeleteTask && (
+                        <button
+                          type="button"
+                          id={`card-del-btn-${task.id}`}
+                          onClick={() => setConfirmDeleteId(task.id)}
+                          className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-500/10 rounded transition cursor-pointer"
+                          title="Permanently delete this record"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+
                       {isAdmin && (
                         <div className="flex items-center gap-1.5">
                           {task.approvalStatus !== 'approved' && onApproveTask && (
@@ -1256,6 +1414,141 @@ export const TaskRegisterView: React.FC<TaskRegisterViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Sticky Floating Bulk Actions Bar (Z-Index 50) */}
+      <AnimatePresence>
+        {selectedRecordIds.size > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 30 }}
+            className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-[94%] max-w-xl bg-zinc-950 text-white p-3 sm:p-4 rounded-xl shadow-2xl border-2 border-red-600 flex items-center justify-between gap-3"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-full bg-red-600 text-white flex items-center justify-center font-black text-xs shrink-0">
+                {selectedRecordIds.size}
+              </div>
+              <div>
+                <div className="text-xs font-black uppercase tracking-tight">
+                  {selectedRecordIds.size} {selectedRecordIds.size === 1 ? 'Record' : 'Records'} Selected
+                </div>
+                <div className="text-[10px] text-zinc-400 hidden sm:block">
+                  Bulk governance or permanent removal
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Bulk Approve (Green) */}
+              <button
+                type="button"
+                id="bulk-approve-action-btn"
+                onClick={handleExecuteBulkApprove}
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase tracking-wider rounded-md flex items-center gap-1.5 transition active:scale-95 cursor-pointer shadow"
+                title="Approve all selected records as Hemen Das"
+              >
+                <ShieldCheck className="w-4 h-4 stroke-[2.5]" />
+                <span className="hidden sm:inline">Bulk Approve</span>
+                <span className="sm:hidden">Approve</span>
+              </button>
+
+              {/* Bulk Delete (Red) */}
+              <button
+                type="button"
+                id="bulk-delete-action-btn"
+                onClick={() => setIsConfirmingBulkDelete(true)}
+                className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-black uppercase tracking-wider rounded-md flex items-center gap-1.5 transition active:scale-95 cursor-pointer shadow"
+                title="Permanently delete all selected records"
+              >
+                <Trash2 className="w-4 h-4 stroke-[2.5]" />
+                <span className="hidden sm:inline">Bulk Delete</span>
+                <span className="sm:hidden">Delete</span>
+              </button>
+
+              {/* Clear Selection ('X') */}
+              <button
+                type="button"
+                id="bulk-clear-selection-btn"
+                onClick={() => setSelectedRecordIds(new Set())}
+                className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded transition cursor-pointer"
+                title="Clear Selection"
+              >
+                <X className="w-4 h-4 stroke-[2.5]" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Individual Record Delete Confirmation Dialog */}
+      {confirmDeleteId && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-md p-6 border-4 border-red-600 shadow-2xl space-y-4 rounded-lg ${
+              isLightMode ? 'bg-white text-zinc-900' : 'bg-zinc-950 text-white'
+            }`}
+          >
+            <div className="flex items-center gap-2.5 text-red-600">
+              <Trash2 className="w-6 h-6 stroke-[2.5]" />
+              <h3 className="text-base font-black uppercase tracking-tight">Delete Audit Record?</h3>
+            </div>
+            <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+              Are you sure you want to permanently delete this audit record from the register and Firebase? This action cannot be undone.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteId(null)}
+                className="px-3.5 py-2 text-xs font-bold uppercase tracking-wider bg-zinc-200 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 hover:bg-zinc-300 dark:hover:bg-zinc-700 rounded transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSingleDelete(confirmDeleteId)}
+                className="px-4 py-2 text-xs font-black uppercase tracking-wider bg-red-600 hover:bg-red-700 text-white rounded shadow transition cursor-pointer"
+              >
+                Delete Record
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Delete Strict Confirmation Dialog */}
+      {isConfirmingBulkDelete && (
+        <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-md p-6 border-4 border-red-600 shadow-2xl space-y-4 rounded-lg ${
+              isLightMode ? 'bg-white text-zinc-900' : 'bg-zinc-950 text-white'
+            }`}
+          >
+            <div className="flex items-center gap-2.5 text-red-600">
+              <AlertTriangle className="w-6 h-6 stroke-[2.5]" />
+              <h3 className="text-base font-black uppercase tracking-tight">Confirm Bulk Deletion</h3>
+            </div>
+            <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+              Are you sure you want to permanently delete <strong>{selectedRecordIds.size} selected audit records</strong> from the register and Firebase Cloud Database? This action is irreversible.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsConfirmingBulkDelete(false)}
+                className="px-3.5 py-2 text-xs font-bold uppercase tracking-wider bg-zinc-200 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 hover:bg-zinc-300 dark:hover:bg-zinc-700 rounded transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteBulkDelete}
+                className="px-4 py-2 text-xs font-black uppercase tracking-wider bg-red-600 hover:bg-red-700 text-white rounded shadow transition cursor-pointer"
+              >
+                Yes, Permanently Delete {selectedRecordIds.size} Records
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Exact Read-Only Audit Mode Modal */}
       {auditModalData && (

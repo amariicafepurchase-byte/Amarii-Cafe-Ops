@@ -13,6 +13,9 @@ interface TaskRegisterModalProps {
   onEditTask?: (task: TaskItem) => void;
   onApproveTask?: (taskId: string) => void;
   onRejectTask?: (taskId: string, reason: string) => void;
+  onDeleteTask?: (taskId: string) => void;
+  onBatchDeleteTasks?: (taskIds: string[]) => void;
+  onBatchApproveTasks?: (taskIds: string[]) => void;
   onViewMedia?: (media: TaskMedia) => void;
 }
 
@@ -24,6 +27,9 @@ export const TaskRegisterModal: React.FC<TaskRegisterModalProps> = ({
   onEditTask,
   onApproveTask,
   onRejectTask,
+  onDeleteTask,
+  onBatchDeleteTasks,
+  onBatchApproveTasks,
   onViewMedia,
 }) => {
   const { isLightMode } = useTheme();
@@ -75,6 +81,9 @@ export const TaskRegisterModal: React.FC<TaskRegisterModalProps> = ({
               onEditTask={onEditTask}
               onApproveTask={onApproveTask}
               onRejectTask={onRejectTask}
+              onDeleteTask={onDeleteTask}
+              onBatchDeleteTasks={onBatchDeleteTasks}
+              onBatchApproveTasks={onBatchApproveTasks}
               onViewMedia={onViewMedia}
               onClose={onClose}
               isModalMode={true}
