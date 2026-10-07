@@ -1,17 +1,37 @@
 @import "tailwindcss";
 
+:root {
+  --bg: #0b0b0c;
+  --surface: #151517;
+  --surface-hover: #1e1e22;
+  --ink: #ffffff;
+  --accent: #5ef7ab;
+  --ink-muted: rgba(255, 255, 255, 0.5);
+  --border: rgba(255, 255, 255, 0.08);
+}
+
 @layer base {
   html, body {
     -webkit-tap-highlight-color: transparent;
     -webkit-touch-callout: none;
     overscroll-behavior-y: none;
     touch-action: manipulation;
-    background-color: #0d1711;
+    background-color: #0b0b0c;
+    color: #ffffff;
+    font-family: 'Inter', sans-serif;
   }
 
   /* Smooth momentum scrolling for Android & Touch */
   * {
     -webkit-overflow-scrolling: touch;
+  }
+
+  .font-display {
+    font-family: 'Oswald', sans-serif;
+  }
+
+  .font-mono-code {
+    font-family: 'JetBrains Mono', monospace;
   }
 
 /* Universal modern slim scrollbars */
@@ -31,12 +51,12 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #244332;
+  background: rgba(255, 255, 255, 0.15);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #366149;
+  background: #5ef7ab;
 }
 
 ::-webkit-scrollbar-corner {
@@ -46,7 +66,7 @@
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #244332 transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
 }
 
   /* Hide scrollbar for clean horizontal chip bars */

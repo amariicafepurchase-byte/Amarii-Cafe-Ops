@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   Utensils,
   Coffee,
@@ -25,6 +25,10 @@ import {
   CheckCircle2,
   Share2,
   Loader2,
+  GripVertical,
+  Move,
+  Minimize2,
+  Maximize2,
 } from 'lucide-react';
 import { TaskItem, ChecklistHeader, TaskMedia, StaffMember, HEADER_TIME_SUGGESTIONS } from '../types';
 import { TaskCard } from './TaskCard';
@@ -99,6 +103,7 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
   const [shareNotice, setShareNotice] = useState<string | null>(null);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
   const [submittedTasksSnapshot, setSubmittedTasksSnapshot] = useState<TaskItem[]>([]);
+  const [isFloatingMinimized, setIsFloatingMinimized] = useState<boolean>(false);
 
   const safeTasks = Array.isArray(tasks) ? tasks : [];
   const baseTasksForStats = allGroupTasks && allGroupTasks.length > 0 ? allGroupTasks : safeTasks;
@@ -483,41 +488,74 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
             </div>
           )}
 
-          {/* Bottom Spacer so content is never hidden behind the fixed bar */}
-          {safeTasks.length > 0 && isSingleChecklist && (
-            <div className="h-16 sm:h-20" aria-hidden="true" />
+          {/* Bottom Spacer so content is never hidden behind the floating bar */}
+          {safeTasks.length > 0 && (
+            <div className="h-24 sm:h-28" aria-hidden="true" />
           )}
 
-          {/* 3. Bottom Google Form Action Bar (Sticky / Fixed Submit Checklist Button) */}
+          {/* 3. Floating Draggable Pop-up Submit Checklist Action Widget */}
           {safeTasks.length > 0 && (
-            <div
+            <motion.div
               id={`submit-action-bar-${resolvedHeaderName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
-              className={
-                isSingleChecklist
-                  ? "fixed bottom-[52px] sm:bottom-0 left-0 right-0 w-full z-45 sm:z-50 bg-white/95 dark:bg-[#1a231e]/95 backdrop-blur-md border-t-2 border-[#673ab7]/40 dark:border-purple-500/30 shadow-[0_-6px_25px_rgba(0,0,0,0.15)] dark:shadow-[0_-6px_25px_rgba(0,0,0,0.6)] py-2 sm:py-2.5 px-3 sm:px-6"
-                  : "sticky bottom-[52px] sm:bottom-0 z-40 bg-white/95 dark:bg-[#1a231e]/95 backdrop-blur-md rounded-lg border-2 border-[#673ab7]/30 dark:border-purple-500/30 shadow-[0_-4px_20px_rgba(0,0,0,0.12)] dark:shadow-[0_-4px_20px_rgba(0,0,0,0.5)] p-3 sm:p-4 flex flex-row items-center justify-between gap-3 mt-4"
-              }
+              drag
+              dragMomentum={false}
+              dragElastic={0.08}
+              whileDrag={{ scale: 1.03, boxShadow: "0 25px 50px -12px rgba(103, 58, 183, 0.45)" }}
+              initial={{ y: 30, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+              className="fixed bottom-[64px] sm:bottom-6 right-3 sm:right-6 z-50 select-none touch-none"
             >
-              <div className={isSingleChecklist ? "max-w-7xl mx-auto flex items-center justify-between gap-3 w-full" : "w-full flex items-center justify-between gap-3"}>
-                {/* Progress Summary */}
-                <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                  <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-purple-100 dark:bg-purple-950/90 flex items-center justify-center text-[#673ab7] dark:text-purple-300 font-black text-xs shrink-0 border border-purple-200 dark:border-purple-800">
-                    {percentage}%
-                  </div>
-                  <div className="min-w-0">
-                    <div className="font-bold text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 leading-tight">
-                      {completedCount} of {safeTasks.length} answered
-                    </div>
-                    <div className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate hidden sm:block">
-                      {resolvedHeaderName} • Responding as {responderName}
-                    </div>
-                  </div>
+              <div
+                style={{
+                  width: '177.714px',
+                  height: '36.3151px',
+                  paddingLeft: '0px',
+                  paddingTop: '8px',
+                  paddingRight: '8px',
+                  paddingBottom: '8px',
+                  marginLeft: '0px',
+                  marginTop: '0px',
+                  marginBottom: '0px',
+                }}
+                className={`flex items-center gap-2 sm:gap-3 rounded-2xl sm:rounded-full border-2 border-[#673ab7] shadow-[0_12px_35px_rgba(103,58,183,0.35)] backdrop-blur-xl transition-colors ${
+                  isLightMode
+                    ? 'bg-white/95 text-zinc-900 border-[#673ab7]'
+                    : 'bg-[#151f18]/95 text-white border-[#7c4dff]'
+                }`}
+              >
+                {/* Drag Handle & Grip Indicator */}
+                <div
+                  className="flex items-center gap-1 pl-1 pr-1.5 py-1 text-zinc-400 hover:text-[#673ab7] dark:hover:text-purple-300 cursor-grab active:cursor-grabbing shrink-0"
+                  title="Drag anywhere on screen (स्क्रीन पर कहीं भी ड्रैग करें)"
+                >
+                  <GripVertical className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.5]" />
+                  <span className="hidden xl:inline text-[9px] font-black uppercase tracking-wider text-purple-600 dark:text-purple-300 bg-purple-100 dark:bg-purple-950/80 px-1.5 py-0.5 rounded-full">
+                    Drag
+                  </span>
                 </div>
 
+                {/* Progress Circle / Badge */}
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-purple-100 dark:bg-purple-950/90 flex items-center justify-center text-[#673ab7] dark:text-purple-300 font-black text-xs shrink-0 border-2 border-purple-300 dark:border-purple-700 shadow-inner">
+                  {percentage}%
+                </div>
+
+                {/* Progress Details (Collapsible) */}
+                {!isFloatingMinimized && (
+                  <div className="min-w-0 pr-1 hidden xs:block">
+                    <div className="font-bold text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 leading-tight flex items-center gap-1.5">
+                      <span>{completedCount}/{safeTasks.length} Done</span>
+                    </div>
+                    <div className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate max-w-[130px] sm:max-w-[180px]">
+                      {resolvedHeaderName}
+                    </div>
+                  </div>
+                )}
+
                 {/* Action Buttons */}
-                <div className="flex items-center gap-2 shrink-0">
-                  {/* Google Forms Clear Form Button */}
-                  {safeTasks.some((t) => t.completed) && onToggleTask && (
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                  {/* Clear Form Button */}
+                  {!isFloatingMinimized && safeTasks.some((t) => t.completed) && onToggleTask && (
                     <button
                       type="button"
                       onClick={() => {
@@ -527,27 +565,28 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
                           }
                         });
                       }}
-                      className="text-xs font-semibold text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 cursor-pointer px-2.5 py-1.5 transition hidden sm:inline-block"
+                      className="text-[11px] font-semibold text-zinc-500 hover:text-red-500 dark:hover:text-red-400 cursor-pointer px-2 py-1 transition hidden md:inline-block"
+                      title="Clear answered questions"
                     >
-                      Clear form
+                      Clear
                     </button>
                   )}
 
-                  {/* Google Forms Prominent Submit Checklist Button */}
+                  {/* Primary Submit Checklist Action Button */}
                   {onSubmitChecklist && (
                     <button
                       type="button"
                       id={`submit-checklist-btn-${resolvedHeaderName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
                       onClick={handleSubmitForm}
-                      className="px-5 sm:px-8 py-2 sm:py-2.5 bg-[#673ab7] hover:bg-[#58309e] text-white text-xs sm:text-sm font-bold uppercase tracking-wide rounded-md shadow-md hover:shadow-lg transition-all cursor-pointer flex items-center gap-2 active:scale-95 shrink-0"
+                      className="px-4 sm:px-6 py-2 sm:py-2.5 bg-gradient-to-r from-[#673ab7] to-[#7c4dff] hover:from-[#58309e] hover:to-[#651fff] text-white text-xs sm:text-sm font-black uppercase tracking-wide rounded-xl sm:rounded-full shadow-md hover:shadow-lg transition-all cursor-pointer flex items-center gap-1.5 sm:gap-2 active:scale-95 shrink-0"
                     >
-                      <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                      <span>Submit Checklist</span>
+                      <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
+                      <span>Submit</span>
                     </button>
                   )}
                 </div>
               </div>
-            </div>
+            </motion.div>
           )}
         </div>
       )}
