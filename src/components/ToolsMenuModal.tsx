@@ -49,6 +49,8 @@ interface ToolsMenuModalProps {
   isFirebaseConnected?: boolean;
   onTriggerTestAlarm?: () => void;
   onTriggerTestUrgentAlert?: () => void;
+  onUpdateApp?: () => void;
+  needRefresh?: boolean;
 }
 
 export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
@@ -76,6 +78,8 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
   isFirebaseConnected = true,
   onTriggerTestAlarm,
   onTriggerTestUrgentAlert,
+  onUpdateApp,
+  needRefresh = false,
 }) => {
   const { isLightMode } = useTheme();
   const { isAdmin, isManager, canAddTask, canAccessTools } = useAuth();
@@ -510,6 +514,42 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
               <div className="flex-1">
                 <div className="font-black uppercase text-[11px] tracking-tight">Daily Shift History</div>
                 <div className="text-[10px] text-zinc-500 font-normal">Browse previous day handover logs & records</div>
+              </div>
+            </button>
+          )}
+
+          {/* Check / Apply App Update */}
+          {onUpdateApp && (
+            <button
+              type="button"
+              id="tools-menu-pwa-update-btn"
+              onClick={() => {
+                onClose();
+                onUpdateApp();
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-3 text-xs font-bold text-left transition cursor-pointer rounded-sm border ${
+                needRefresh
+                  ? 'bg-purple-600 text-white border-purple-400 animate-pulse'
+                  : isLightMode
+                  ? 'bg-purple-50 hover:bg-purple-100 border-purple-200 text-purple-950'
+                  : 'bg-purple-950/40 hover:bg-purple-900/60 border-purple-800 text-purple-200'
+              }`}
+            >
+              <div className="p-2 rounded bg-purple-500/20 text-purple-400">
+                <Smartphone className="w-4 h-4" />
+              </div>
+              <div className="flex-1">
+                <div className="font-black uppercase text-[11px] tracking-tight flex items-center justify-between">
+                  <span>{needRefresh ? '✨ New Update Ready — Tap to Reload!' : 'Check / Reload Latest App Build'}</span>
+                  {needRefresh && (
+                    <span className="text-[9px] font-black uppercase bg-white text-purple-950 px-1.5 py-0.2 rounded-xs">
+                      UPDATE READY
+                    </span>
+                  )}
+                </div>
+                <div className="text-[10px] opacity-80 font-normal">
+                  Refreshes cache and loads the latest Vercel deployment instantly
+                </div>
               </div>
             </button>
           )}

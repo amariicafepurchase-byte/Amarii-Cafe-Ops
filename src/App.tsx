@@ -84,6 +84,8 @@ import { PREDEFINED_CHECKLIST_TEMPLATES, STATION_DEFAULT_HEADERS } from './data/
 import { SubmissionSuccessModal, SubmissionSuccessData } from './components/SubmissionSuccessModal';
 import firebaseConfigData from '../firebase-applet-config.json';
 import { usePWAInstall } from './hooks/usePWAInstall';
+import { usePWAUpdate } from './hooks/usePWAUpdate';
+import { PWAUpdateBanner } from './components/PWAUpdateBanner';
 import { useTheme } from './context/ThemeContext';
 import { useAuth } from './context/AuthContext';
 import { useOutlet } from './context/OutletContext';
@@ -455,6 +457,14 @@ export default function App() {
 
   // PWA install hook
   const { isInstallable, isInstalled, install, deferredPrompt } = usePWAInstall();
+
+  // PWA Service Worker auto-update hook
+  const {
+    needRefresh: swNeedRefresh,
+    isUpdating: swIsUpdating,
+    updateApp: swUpdateApp,
+    dismissUpdate: swDismissUpdate,
+  } = usePWAUpdate();
 
   // Chat Assistant state
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -3040,6 +3050,13 @@ export default function App() {
           : 'bg-[#132219] text-[#F7F4EB] selection:bg-[#E05A47] selection:text-white'
       }`}
     >
+      {/* In-App "New Version Available" Alert & Reload Prompt Banner */}
+      <PWAUpdateBanner
+        needRefresh={swNeedRefresh}
+        isUpdating={swIsUpdating}
+        onUpdate={swUpdateApp}
+        onDismiss={swDismissUpdate}
+      />
       {/* Floating Validation Warning Alert / Toast */}
       {validationWarning && (
         <div
@@ -4286,6 +4303,8 @@ export default function App() {
         onOpenTaskRegister={() => setIsTaskRegisterOpen(true)}
         onTriggerTestAlarm={handleTriggerTestAlarm}
         onTriggerTestUrgentAlert={handleTriggerTestUrgentAlert}
+        onUpdateApp={swUpdateApp}
+        needRefresh={swNeedRefresh}
       />
 
       {/* Desktop-Style Incomplete Urgent Task Deadline Alert Banner */}
