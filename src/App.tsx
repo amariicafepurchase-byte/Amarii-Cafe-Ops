@@ -47,6 +47,7 @@ import {
   ChecklistHeader,
   CHECKLIST_HEADERS,
   DEFAULT_OUTLET,
+  TaskEditRequest,
 } from './types';
 import { INITIAL_STAFF, DEPARTMENTS, DEPARTMENT_COLORS } from './data/staffData';
 import { INITIAL_DAILY_TASKS } from './data/defaultTasks';
@@ -287,6 +288,14 @@ export default function App() {
   });
   const [history, setHistory] = useState<ShiftRecord[]>([]);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [editRequests, setEditRequests] = useState<TaskEditRequest[]>(() => {
+    try {
+      const cached = localStorage.getItem('amarii_edit_requests_v1');
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
 
   // Active Staff Member on this device
   const [activeStaff, setActiveStaff] = useState<StaffMember | null>(() => {
@@ -1345,6 +1354,39 @@ export default function App() {
       dueDate: taskData.dueDate || nowIso.slice(0, 10),
     };
 
+    // Strict Requirement 3: Managers MUST NOT directly overwrite core task definitions/templates!
+    // Instead, create a Task Edit Request proposal for Admin approval.
+    if (!isAdmin && editingTask) {
+      const newReq: TaskEditRequest = {
+        id: `req-${Date.now()}`,
+        taskId: editingTask.id,
+        taskTitle: editingTask.title,
+        originalTask: editingTask,
+        proposedTask: taskWithOutlet,
+        requestedBy: activeStaff?.name || currentUser?.name || 'Manager',
+        requestedAt: nowIso,
+        status: 'pending',
+      };
+
+      setEditRequests((prev) => {
+        const updated = [newReq, ...prev];
+        try {
+          localStorage.setItem('amarii_edit_requests_v1', JSON.stringify(updated));
+        } catch (e) {}
+        return updated;
+      });
+
+      setToastFeedback({
+        id: `toast-edit-req-${Date.now()}`,
+        text: `✓ Change Proposal for "${taskWithOutlet.title}" submitted to Admin (Hemen Das) for approval!`,
+        type: 'success',
+      });
+
+      setIsAssignModalOpen(false);
+      setEditingTask(null);
+      return;
+    }
+
     if (editingTask) {
       setTasks((prev) => prev.map((t) => (t.id === taskWithOutlet.id ? taskWithOutlet : t)));
     } else {
@@ -1355,6 +1397,7 @@ export default function App() {
     setFilterStatus('all');
     setActiveMobileTab('tasks');
     setIsAssignModalOpen(false);
+    setEditingTask(null);
 
     // If checklist was previously marked deleted, unmark it
     if (taskWithOutlet.checklistHeader) {
@@ -1384,6 +1427,54 @@ export default function App() {
     } catch (e) {
       console.error('Failed to save task via queue:', e);
     }
+  };
+
+  const handleApproveEditRequest = async (reqId: string) => {
+    const req = editRequests.find((r) => r.id === reqId);
+    if (!req) return;
+
+    // 1. Update task in state
+    setTasks((prev) => prev.map((t) => (t.id === req.taskId ? req.proposedTask : t)));
+
+    // 2. Update request status
+    setEditRequests((prev) => {
+      const updated = prev.map((r) => (r.id === reqId ? { ...r, status: 'approved' as const } : r));
+      try {
+        localStorage.setItem('amarii_edit_requests_v1', JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+
+    // 3. Save to Firestore
+    try {
+      await executeTaskOperationWithQueue({
+        type: 'SAVE_TASK',
+        task: req.proposedTask,
+      });
+    } catch (e) {
+      console.error('Failed to save approved task edit via queue:', e);
+    }
+
+    setToastFeedback({
+      id: `toast-appr-req-${Date.now()}`,
+      text: `✓ Approved task change for "${req.taskTitle}"! Core checklist updated.`,
+      type: 'success',
+    });
+  };
+
+  const handleRejectEditRequest = (reqId: string) => {
+    setEditRequests((prev) => {
+      const updated = prev.map((r) => (r.id === reqId ? { ...r, status: 'rejected' as const } : r));
+      try {
+        localStorage.setItem('amarii_edit_requests_v1', JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+    setToastFeedback({
+      id: `toast-rej-req-${Date.now()}`,
+      text: 'Task change request rejected.',
+      type: 'info',
+    });
   };
 
   // Bulk Task Creation Handler (from Add Task modal staged list)
@@ -3882,7 +3973,7 @@ export default function App() {
                           allGroupTasks={allGroupTasks}
                           isSingleChecklist={checklistGroupsToRender.length === 1}
                           onToggleTask={handleToggleTask}
-                          onEditTask={isHemenAdmin ? handleEditTask : undefined}
+                          onEditTask={(isAdmin || isManager) ? handleEditTask : undefined}
                           onDeleteTask={isHemenAdmin ? handleDeleteTask : undefined}
                           onUnpackSubTasks={handleUnpackSubTasks}
                           onDeleteChecklist={isHemenAdmin ? handleDeleteChecklist : undefined}
@@ -3950,7 +4041,7 @@ export default function App() {
                       department={dept}
                       tasks={deptTasks}
                       onToggleTask={handleToggleTask}
-                      onEditTask={canEditTask ? handleEditTask : undefined}
+                      onEditTask={(isAdmin || isManager) ? handleEditTask : undefined}
                       onDeleteTask={canDeleteTask ? handleDeleteTask : undefined}
                       onUnpackSubTasks={handleUnpackSubTasks}
                       onViewMedia={setSelectedMedia}
@@ -4008,7 +4099,7 @@ export default function App() {
                   tasks={urgentFiltered}
                   startIndex={0}
                   onToggleTask={handleToggleTask}
-                  onEditTask={canEditTask ? handleEditTask : undefined}
+                  onEditTask={(isAdmin || isManager) ? handleEditTask : undefined}
                   onDeleteTask={canDeleteTask ? handleDeleteTask : undefined}
                   onUnpackSubTasks={handleUnpackSubTasks}
                   onViewMedia={setSelectedMedia}
@@ -4031,7 +4122,30 @@ export default function App() {
                   tasks={todayFiltered}
                   startIndex={urgentFiltered.length}
                   onToggleTask={handleToggleTask}
-                  onEditTask={canEditTask ? handleEditTask : undefined}
+                  onEditTask={(isAdmin || isManager) ? handleEditTask : undefined}
+                  onDeleteTask={canDeleteTask ? handleDeleteTask : undefined}
+                  onUnpackSubTasks={handleUnpackSubTasks}
+                  onViewMedia={setSelectedMedia}
+                  onAddMediaToTask={handleAddMediaToTask}
+                  onUpdateTaskNote={handleUpdateTaskNote}
+                  onToggleSubTask={handleToggleSubTask}
+                  onAddSubTaskMedia={handleAddSubTaskMedia}
+                  onUpdateSubTaskNote={handleUpdateSubTaskNote}
+                  onApproveTask={handleApproveTask}
+                  onRejectTask={handleRejectTask}
+                  staffList={staffList}
+                  onAddTaskToSection={canAddTask ? () => handleOpenAssignModal(currentStation !== 'Manager' ? (currentStation as TaskDepartment) : 'Kitchen') : undefined}
+                  blockedTaskId={blockedTaskId}
+                />
+
+                <SectionBlock
+                  title="Pending / Follow-ups"
+                  subtitle="Vendor quotes, manager overrides & pending approvals"
+                  priority="pending"
+                  tasks={pendingFiltered}
+                  startIndex={urgentFiltered.length + todayFiltered.length}
+                  onToggleTask={handleToggleTask}
+                  onEditTask={(isAdmin || isManager) ? handleEditTask : undefined}
                   onDeleteTask={canDeleteTask ? handleDeleteTask : undefined}
                   onUnpackSubTasks={handleUnpackSubTasks}
                   onViewMedia={setSelectedMedia}
@@ -4200,6 +4314,22 @@ export default function App() {
     setIsDuplicateMode(false);
           setIsAssignModalOpen(true);
         }}
+      />
+
+      {/* Task Directory & Checklist Management Modal */}
+      <TaskManagementModal
+        isOpen={isTaskDirectoryOpen}
+        onClose={() => setIsTaskDirectoryOpen(false)}
+        tasks={tasks}
+        onEditTask={handleEditTask}
+        onDuplicateTask={handleDuplicateTask}
+        onDeleteTask={handleDeleteTask}
+        onDeleteChecklist={handleDeleteChecklist}
+        onBatchDeleteTasks={handleBatchDeleteTasks}
+        onAddTaskToHeader={handleAddTaskToHeader}
+        editRequests={editRequests}
+        onApproveEditRequest={handleApproveEditRequest}
+        onRejectEditRequest={handleRejectEditRequest}
       />
 
       {/* Task Creation / Edit / Assignment Modal */}

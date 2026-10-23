@@ -371,7 +371,20 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Digital Clock */}
           <span
-            className={`text-xs sm:text-sm font-black tabular-nums font-mono pl-0.5 sm:pl-1 flex-shrink-0 whitespace-nowrap ${
+            style={{
+              width: '53.416700000000006px',
+              height: '35.6667px',
+              fontSize: '8px',
+              lineHeight: '8px',
+              textAlign: 'center',
+              paddingTop: '2px',
+              paddingRight: '0px',
+              marginRight: '10px',
+              marginLeft: '0px',
+              marginTop: '33px',
+              marginBottom: '0px',
+            }}
+            className={`font-black tabular-nums font-mono pl-0.5 sm:pl-1 flex-shrink-0 whitespace-nowrap ${
               isLightMode ? 'text-zinc-950' : 'text-zinc-200'
             }`}
           >

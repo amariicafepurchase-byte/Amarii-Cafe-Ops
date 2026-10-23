@@ -15,7 +15,7 @@ export type TaskDepartment =
   | 'Kitchen & Food Prep'
   | 'Closing & Maintenance';
 
-export type RoleType = 'manager' | 'employee';
+export type RoleType = 'manager' | 'employee' | 'admin';
 
 export interface Outlet {
   id: string;
@@ -62,6 +62,8 @@ export interface StaffMember {
   department: TaskDepartment;
   designation: string;
   roleType: RoleType;
+  roleCategory?: RoleType | string;
+  role?: string;
   avatarColor?: string;
   active?: boolean;
   pin?: string;
@@ -230,5 +232,16 @@ export interface AuthUser {
   outlet?: string;
   isActive?: boolean;
   phone?: string;
+}
+
+export interface TaskEditRequest {
+  id: string;
+  taskId: string;
+  taskTitle: string;
+  originalTask: TaskItem;
+  proposedTask: TaskItem;
+  requestedBy: string;
+  requestedAt: string;
+  status: 'pending' | 'approved' | 'rejected';
 }
 

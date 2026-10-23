@@ -20,9 +20,10 @@ import {
   Cloud,
   Check,
 } from 'lucide-react';
-import { TaskItem } from '../types';
+import { TaskItem, TaskEditRequest } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { useTaskQueue } from '../hooks/useTaskQueue';
+import { useAuth } from '../context/AuthContext';
 
 interface TaskManagementModalProps {
   isOpen: boolean;
@@ -34,6 +35,9 @@ interface TaskManagementModalProps {
   onDeleteChecklist?: (headerName: string) => void;
   onBatchDeleteTasks?: (taskIds: string[]) => void;
   onAddTaskToHeader?: (headerName: string) => void;
+  editRequests?: TaskEditRequest[];
+  onApproveEditRequest?: (reqId: string) => void;
+  onRejectEditRequest?: (reqId: string) => void;
 }
 
 export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
@@ -46,9 +50,13 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
   onDeleteChecklist,
   onBatchDeleteTasks,
   onAddTaskToHeader,
+  editRequests = [],
+  onApproveEditRequest,
+  onRejectEditRequest,
 }) => {
   const { isLightMode } = useTheme();
-  const [activeTab, setActiveTab] = useState<'checklists' | 'tasks'>('checklists');
+  const { isAdmin } = useAuth();
+  const [activeTab, setActiveTab] = useState<'checklists' | 'tasks' | 'requests'>('checklists');
   const [searchQuery, setSearchQuery] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmDeleteHeader, setConfirmDeleteHeader] = useState<string | null>(null);
@@ -338,13 +346,32 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                 <ListTodo className="w-4 h-4" />
                 <span>All Tasks ({tasks.length})</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('requests')}
+                className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-black uppercase tracking-tight flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
+                  activeTab === 'requests'
+                    ? isLightMode
+                      ? 'border-amber-600 text-amber-900 bg-amber-50 shadow-sm'
+                      : 'border-amber-400 text-amber-300 bg-amber-950/40'
+                    : isLightMode
+                    ? 'border-transparent text-zinc-500 hover:text-zinc-900'
+                    : 'border-transparent text-zinc-400 hover:text-white'
+                }`}
+              >
+                <AlertTriangle className="w-4 h-4 text-amber-500" />
+                <span>Edit Requests ({editRequests.filter((r) => r.status === 'pending').length})</span>
+              </button>
             </div>
 
             {/* Quick action info */}
             <div className="text-[11px] font-bold text-zinc-500 hidden md:block">
               {activeTab === 'checklists'
                 ? 'Delete entire checklists or add tasks to them directly'
-                : 'Select tasks for bulk deletion or edit individual tasks'}
+                : activeTab === 'tasks'
+                ? 'Select tasks for bulk deletion or request task edits'
+                : 'Review & approve task edit requests submitted by Managers'}
             </div>
           </div>
 
@@ -796,6 +823,88 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* TAB 3: MANAGER EDIT REQUESTS */}
+          {activeTab === 'requests' && (
+            <div className="flex-1 overflow-auto p-4 sm:p-6 space-y-4">
+              <div className="flex items-center justify-between border-b pb-3 border-zinc-200 dark:border-zinc-800">
+                <div>
+                  <h3 className="text-sm font-black uppercase tracking-wider flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-500" />
+                    <span>Manager Task Edit & Change Proposals</span>
+                  </h3>
+                  <p className="text-xs text-zinc-500 font-medium">
+                    Strict Policy: Direct template/task editing is restricted to Admin. Managers submit proposals below for approval.
+                  </p>
+                </div>
+              </div>
+
+              {editRequests.length === 0 ? (
+                <div className={`p-8 text-center text-xs font-bold uppercase border-2 border-dashed ${
+                  isLightMode ? 'bg-white border-zinc-300 text-zinc-500' : 'bg-zinc-900/40 border-[#1D3528] text-zinc-400'
+                }`}>
+                  No pending task edit requests.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {editRequests.map((req) => (
+                    <div
+                      key={req.id}
+                      className={`p-3.5 border-2 rounded-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                        req.status === 'pending'
+                          ? isLightMode
+                            ? 'bg-amber-50 border-amber-300 text-zinc-950'
+                            : 'bg-amber-950/30 border-amber-800 text-amber-200'
+                          : req.status === 'approved'
+                          ? isLightMode
+                            ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                            : 'bg-emerald-950/30 border-emerald-800 text-emerald-200'
+                          : isLightMode
+                          ? 'bg-red-50 border-red-200 text-red-900'
+                          : 'bg-red-950/30 border-red-900 text-red-200'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-xs ${
+                            req.status === 'pending' ? 'bg-amber-500 text-black' : req.status === 'approved' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'
+                          }`}>
+                            {req.status.toUpperCase()}
+                          </span>
+                          <h4 className="text-xs font-black uppercase">{req.taskTitle}</h4>
+                        </div>
+                        <p className="text-[11px] font-medium opacity-80">
+                          Requested by <span className="font-bold">{req.requestedBy}</span> on {new Date(req.requestedAt).toLocaleString()}
+                        </p>
+                        <p className="text-[10px] font-mono opacity-70">
+                          Proposed Title: "{req.proposedTask.title}" | Dept: {req.proposedTask.department} | Header: {req.proposedTask.checklistHeader}
+                        </p>
+                      </div>
+
+                      {req.status === 'pending' && isAdmin && (
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => onApproveEditRequest && onApproveEditRequest(req.id)}
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-tight flex items-center gap-1 cursor-pointer rounded-xs"
+                          >
+                            <Check className="w-3.5 h-3.5" /> Approve Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onRejectEditRequest && onRejectEditRequest(req.id)}
+                            className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-black uppercase tracking-tight flex items-center gap-1 cursor-pointer rounded-xs"
+                          >
+                            <X className="w-3.5 h-3.5" /> Reject
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </motion.div>

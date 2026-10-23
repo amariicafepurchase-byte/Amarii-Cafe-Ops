@@ -137,7 +137,12 @@ export const StationSelectorModal: React.FC<StationSelectorModalProps> = ({
   const safeStaffList = Array.isArray(staffList) ? staffList : [];
   const safeTaskCounts = taskCountsByDept || {};
 
-  const isStaffEmployee = activeStaff && activeStaff.roleType === 'employee';
+  const isStaffEmployee = activeStaff && 
+    (activeStaff.roleType === 'employee' || activeStaff.roleCategory === 'employee') &&
+    activeStaff.roleType !== 'manager' &&
+    activeStaff.roleCategory !== 'manager' &&
+    activeStaff.roleType !== 'admin' &&
+    activeStaff.roleCategory !== 'admin';
   const isLockedForEmployee = isStaffEmployee && !isManagerUnlocked;
 
   const handleStationClick = (stationId: StationMode) => {

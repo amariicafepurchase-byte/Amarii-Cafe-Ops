@@ -213,7 +213,8 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
     setFormPhone(s.phone || '');
     setFormDept(s.department);
     setFormOutlet(s.outlet || activeOutlet);
-    setFormRoleType(s.roleType);
+    const initialRole = (s.roleType || s.roleCategory || s.role || 'employee') as RoleType;
+    setFormRoleType(initialRole);
     setFormDesignation(s.designation);
     setFormPin(s.pin || '');
     setFormPassword('');
@@ -302,6 +303,8 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
           department: formDept,
           outlet: formOutlet || existing.outlet || activeOutlet,
           roleType: formRoleType,
+          roleCategory: formRoleType,
+          role: formRoleType,
           designation: formDesignation.trim(),
           isActive: formIsActive,
           active: formIsActive,
@@ -333,12 +336,14 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
         department: formDept,
         outlet: formOutlet || activeOutlet,
         roleType: formRoleType,
+        roleCategory: formRoleType,
+        role: formRoleType,
         designation: formDesignation.trim(),
         pin: finalPin,
         password: formPassword.trim(),
         isActive: formIsActive,
         active: formIsActive,
-        avatarColor: formRoleType === 'manager' ? 'bg-red-500 text-white' : 'bg-emerald-500 text-white',
+        avatarColor: formRoleType === 'manager' ? 'bg-red-500 text-white' : formRoleType === 'admin' ? 'bg-zinc-900 text-white' : 'bg-emerald-500 text-white',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -814,12 +819,12 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                       <label className={`block text-[9px] font-black uppercase tracking-wider ${isLightMode ? 'text-zinc-700' : 'text-zinc-300'} mb-1`}>
                         Role Category *
                       </label>
-                      <div className="grid grid-cols-2 gap-1.5">
+                      <div className="grid grid-cols-3 gap-1">
                         <button
                           type="button"
                           id="btn-role-employee"
                           onClick={() => setFormRoleType('employee')}
-                          className={`h-7.5 text-[10px] font-black uppercase border transition cursor-pointer rounded-xs ${
+                          className={`h-7.5 text-[9px] font-black uppercase border transition cursor-pointer rounded-xs px-1 ${
                             formRoleType === 'employee'
                               ? isLightMode
                                 ? 'bg-zinc-900 text-white border-zinc-900'
@@ -835,7 +840,7 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                           type="button"
                           id="btn-role-manager"
                           onClick={() => setFormRoleType('manager')}
-                          className={`h-7.5 text-[10px] font-black uppercase border transition cursor-pointer rounded-xs ${
+                          className={`h-7.5 text-[9px] font-black uppercase border transition cursor-pointer rounded-xs px-1 ${
                             formRoleType === 'manager'
                               ? 'bg-red-500 text-white border-red-500 font-black'
                               : isLightMode
@@ -844,6 +849,20 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                           }`}
                         >
                           Manager / Lead
+                        </button>
+                        <button
+                          type="button"
+                          id="btn-role-admin"
+                          onClick={() => setFormRoleType('admin')}
+                          className={`h-7.5 text-[9px] font-black uppercase border transition cursor-pointer rounded-xs px-1 ${
+                            formRoleType === 'admin'
+                              ? 'bg-amber-500 text-black border-amber-500 font-black'
+                              : isLightMode
+                              ? 'bg-zinc-100 text-zinc-700 border-zinc-300 hover:border-zinc-400'
+                              : 'bg-black text-zinc-400 border-zinc-700 hover:border-zinc-500'
+                          }`}
+                        >
+                          Admin / Owner
                         </button>
                       </div>
                     </div>

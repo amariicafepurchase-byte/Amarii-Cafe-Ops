@@ -132,21 +132,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const isCurrentUserHemenDas = isHemenDas(currentUser);
-  const isAdmin = isCurrentUserHemenDas;
-  const isManager = false; // Hemen Das is the sole controller
-  const isStaff = !isCurrentUserHemenDas;
+  const userRole = (currentUser?.role || (currentUser as any)?.roleType || (currentUser as any)?.roleCategory || '').toLowerCase();
+  
+  const isAdmin = isCurrentUserHemenDas || userRole === 'admin' || userRole === 'owner';
+  const isManager = !isAdmin && (
+    userRole === 'manager' ||
+    userRole === 'lead' ||
+    userRole.includes('manager') ||
+    (currentUser?.designation && (
+      currentUser.designation.toLowerCase().includes('manager') ||
+      currentUser.designation.toLowerCase().includes('lead')
+    ))
+  );
+  const isStaff = !isAdmin && !isManager;
 
-  // STRICT REQUIREMENT:
-  // "hemen das ko chod ke kisiko bhi tools ka access mat do sab kuch hemen das hi handle karenge aur control karenge unke alawa koi nhi karega"
-  // Hemen Das has 100% full master access to tools, task management, checklists, and station control.
-  // All other staff (e.g., Aditya, Chef, Barista) are restricted to their station checklist and cannot access tools or admin controls.
-  const canAccessTools = isCurrentUserHemenDas;
-  const canViewAllDepartments = isCurrentUserHemenDas;
-  const canAddTask = isCurrentUserHemenDas;
-  const canEditTask = isCurrentUserHemenDas;
-  const canDeleteTask = isCurrentUserHemenDas;
-  const canOverrideMandatory = isCurrentUserHemenDas;
-  const canSwitchStations = isCurrentUserHemenDas;
+  // Permissions:
+  // - Admin (Hemen Das): Full direct control over everything (editing tasks, creating templates, system config)
+  // - Manager / Lead: View & switch all stations, complete/submit checklists for all departments, access tools, but CANNOT directly edit core task templates (triggers Edit Request proposal)
+  // - Staff / Employee: Locked to primary station, fill out assigned station checklist
+  const canAccessTools = isAdmin || isManager;
+  const canViewAllDepartments = isAdmin || isManager;
+  const canSwitchStations = isAdmin || isManager;
+  const canAddTask = isAdmin;
+  const canEditTask = isAdmin; // Direct edit restricted strictly to Admin
+  const canDeleteTask = isAdmin;
+  const canOverrideMandatory = isAdmin || isManager;
 
   // Map staff department to station
   const staffStation = currentUser?.department;

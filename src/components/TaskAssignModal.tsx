@@ -37,6 +37,7 @@ import {
 import { DEPARTMENTS } from '../data/staffData';
 import { useOutlet } from '../context/OutletContext';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import { LiveCameraModal } from './LiveCameraModal';
 
 interface TaskAssignModalProps {
@@ -68,6 +69,7 @@ export const TaskAssignModal: React.FC<TaskAssignModalProps> = ({
 }) => {
   const { activeOutlet, availableOutlets } = useOutlet();
   const { isLightMode } = useTheme();
+  const { isAdmin } = useAuth();
 
   // Live Camera state
   const [isLiveCameraOpen, setIsLiveCameraOpen] = useState<boolean>(false);
@@ -1730,24 +1732,24 @@ export const TaskAssignModal: React.FC<TaskAssignModalProps> = ({
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={handleSubmit}
-              className={`px-6 py-2.5 text-xs font-black uppercase tracking-tight transition cursor-pointer flex items-center justify-center gap-1.5 min-h-[44px] shadow-md ${
-                isLightMode
-                  ? 'bg-zinc-950 text-white hover:bg-zinc-800'
-                  : 'bg-white text-black hover:bg-zinc-200'
-              }`}
-            >
-              <Check className="w-4 h-4 stroke-[3]" />
-              <span>
-                {editingTask && !isDuplicate
-                  ? 'Save Checklist Changes'
-                  : totalTasksToSubmit > 1
-                  ? `Create All (${totalTasksToSubmit}) Tasks`
-                  : 'Save to Daily Checklist'}
-              </span>
-            </button>
+              <button
+                type="button"
+                onClick={handleSubmit}
+                className={`px-6 py-2.5 text-xs font-black uppercase tracking-tight transition cursor-pointer flex items-center justify-center gap-1.5 min-h-[44px] shadow-md ${
+                  isLightMode
+                    ? 'bg-zinc-950 text-white hover:bg-zinc-800'
+                    : 'bg-white text-black hover:bg-zinc-200'
+                }`}
+              >
+                <Check className="w-4 h-4 stroke-[3]" />
+                <span>
+                  {editingTask && !isDuplicate
+                    ? (!isAdmin ? 'Request Task Edit / Change' : 'Save Checklist Changes')
+                    : totalTasksToSubmit > 1
+                    ? `Create All (${totalTasksToSubmit}) Tasks`
+                    : 'Save to Daily Checklist'}
+                </span>
+              </button>
           </div>
         </div>
 
