@@ -513,6 +513,24 @@ export const Header: React.FC<HeaderProps> = ({
             )}
           </button>
 
+          {/* My Submissions & Shift History Button (All Users: Staff, Managers & Admin) */}
+          {onOpenHistoryModal && (
+            <button
+              type="button"
+              id="header-past-submissions-btn"
+              onClick={onOpenHistoryModal}
+              className={`inline-flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-1.5 font-black uppercase text-xs tracking-tight transition shadow-xs cursor-pointer border rounded-xs flex-shrink-0 ${
+                isLightMode
+                  ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400'
+                  : 'bg-amber-950/70 hover:bg-amber-900 text-amber-200 border-amber-600/70'
+              }`}
+              title="View My Past Submissions & Shift History"
+            >
+              <History className="w-3.5 h-3.5 stroke-[2.5]" />
+              <span>📜 My Submissions</span>
+            </button>
+          )}
+
           {/* Master Task Register & Ledger Button (Hemen Das & Managers) */}
           {(isAdmin || isManager) && onOpenTaskRegister && (
             <button

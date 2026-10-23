@@ -82,39 +82,7 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
 
   if (!isOpen) return null;
 
-  if (!canAccessTools) {
-    return (
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Access Restricted"
-        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-200"
-      >
-        <div
-          className={`max-w-md w-full p-6 border-2 border-red-500 text-center space-y-4 shadow-2xl ${
-            isLightMode ? 'bg-white text-zinc-900' : 'bg-zinc-950 text-white'
-          }`}
-        >
-          <div className="w-12 h-12 mx-auto rounded-full bg-red-500/10 border border-red-500 flex items-center justify-center text-red-500">
-            <Lock className="w-6 h-6 stroke-[2.5]" />
-          </div>
-          <h3 className="text-base font-black uppercase tracking-tight text-red-500">
-            Access Restricted
-          </h3>
-          <p className="text-xs font-bold text-zinc-400">
-            Only Hemen Das (General Manager & Owner) has authorization to access Operations Tools and administrative controls.
-          </p>
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-full py-2.5 text-xs font-black uppercase tracking-wider bg-zinc-900 text-white dark:bg-white dark:text-black cursor-pointer rounded-xs"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    );
-  }
+
 
   return (
     <div

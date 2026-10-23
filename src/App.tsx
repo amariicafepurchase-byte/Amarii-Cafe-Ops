@@ -81,6 +81,7 @@ import { UrgentDeadlineBanner } from './components/UrgentDeadlineBanner';
 import { PullToRefresh } from './components/PullToRefresh';
 import { ChecklistsSidebar, ParentChecklistInfo } from './components/ChecklistsSidebar';
 import { PREDEFINED_CHECKLIST_TEMPLATES, STATION_DEFAULT_HEADERS } from './data/checklistTemplates';
+import { SubmissionSuccessModal, SubmissionSuccessData } from './components/SubmissionSuccessModal';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { useTheme } from './context/ThemeContext';
 import { useAuth } from './context/AuthContext';
@@ -410,6 +411,8 @@ export default function App() {
   const [isInstallModalOpen, setIsInstallModalOpen] = useState<boolean>(false);
   const [isPasteModalOpen, setIsPasteModalOpen] = useState<boolean>(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState<boolean>(false);
+  const [submissionSuccessData, setSubmissionSuccessData] = useState<SubmissionSuccessData | null>(null);
+  const [isSubmissionSuccessModalOpen, setIsSubmissionSuccessModalOpen] = useState<boolean>(false);
   const [isStaffModalOpen, setIsStaffModalOpen] = useState<boolean>(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState<boolean>(false);
   const [isTaskDirectoryOpen, setIsTaskDirectoryOpen] = useState<boolean>(false);
@@ -2180,7 +2183,29 @@ export default function App() {
 
     setHistory((prev) => [shiftRecord, ...prev]);
 
-    // 6. Direct Final Save into Firebase Firestore & Master Task Register (with robust offline queueing)
+    // 6. Trigger Post-Submission Success Dialog & WhatsApp / PDF Export Modal
+    const yesCount = sourceTasks.filter((t) => t.completed).length;
+    const noCount = sourceTasks.filter((t) => !t.completed).length;
+    const photosCount = sourceTasks.reduce((acc, t) => {
+      const taskPhotos = (t.media || []).filter((m) => m.type === 'photo').length;
+      const subPhotos = (t.subTasks || []).reduce((sAcc, s) => sAcc + (s.media || []).filter((m) => m.type === 'photo').length, 0);
+      return acc + taskPhotos + subPhotos;
+    }, 0);
+
+    setSubmissionSuccessData({
+      checklistName: headerName,
+      station: sourceTasks[0]?.department || (currentStation !== 'Manager' ? currentStation : 'Management'),
+      filledBy: submitterName,
+      timestamp: nowIso,
+      yesCount,
+      noCount,
+      photosCount,
+      tasks: finalizedTasks,
+      outletName: activeOutlet,
+    });
+    setIsSubmissionSuccessModalOpen(true);
+
+    // 7. Direct Final Save into Firebase Firestore & Master Task Register (with robust offline queueing)
     if (!isDeviceOnline()) {
       enqueueOfflineSubmission({
         headerName,
@@ -4289,12 +4314,20 @@ export default function App() {
         isInstalled={isInstalled}
       />
 
-      {/* Shift History Modal */}
+      {/* Shift History & My Submissions Modal */}
       <ShiftHistoryModal
         isOpen={isHistoryModalOpen}
         onClose={() => setIsHistoryModalOpen(false)}
         history={history}
-        onRestoreShift={handleRestoreShift}
+        onClearHistory={() => setHistory([])}
+        onViewMedia={setSelectedMedia}
+      />
+
+      {/* Post-Submission Success Dialog & WhatsApp / PDF Export Modal */}
+      <SubmissionSuccessModal
+        isOpen={isSubmissionSuccessModalOpen}
+        onClose={() => setIsSubmissionSuccessModalOpen(false)}
+        data={submissionSuccessData}
       />
 
       {/* Staff Management Modal */}

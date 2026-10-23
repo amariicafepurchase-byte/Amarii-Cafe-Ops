@@ -144,32 +144,28 @@ export const AndroidBottomNav: React.FC<AndroidBottomNavProps> = ({
         <div className="flex-1" />
       )}
 
-      {/* 4. Tools & Operations Menu Button - HEMEN DAS ONLY */}
-      {canAccessTools ? (
-        <button
-          type="button"
-          id="android-nav-tools"
-          onClick={() => {
-            triggerHaptic('light');
-            if (onOpenTools) onOpenTools();
-          }}
-          className={`flex-1 flex flex-col items-center justify-center py-1.5 px-1 transition relative cursor-pointer min-h-[48px] ${
-            isToolsOpen
-              ? 'text-[#E05A47] font-black'
-              : isLightMode
-              ? 'text-zinc-500 font-bold hover:text-zinc-950'
-              : 'text-zinc-400 font-bold hover:text-white'
-          }`}
-          title="Tools & Operations (Hemen Das)"
-        >
-          <div className="relative">
-            <SlidersHorizontal className={`w-5 h-5 ${isToolsOpen ? 'text-[#E05A47] stroke-[2.5]' : ''}`} />
-          </div>
-          <span className="text-[10px] uppercase tracking-tighter mt-1">Tools</span>
-        </button>
-      ) : (
-        <div className="flex-1" />
-      )}
+      {/* 4. Tools & Operations Menu Button (All Users) */}
+      <button
+        type="button"
+        id="android-nav-tools"
+        onClick={() => {
+          triggerHaptic('light');
+          if (onOpenTools) onOpenTools();
+        }}
+        className={`flex-1 flex flex-col items-center justify-center py-1.5 px-1 transition relative cursor-pointer min-h-[48px] ${
+          isToolsOpen
+            ? 'text-[#E05A47] font-black'
+            : isLightMode
+            ? 'text-zinc-500 font-bold hover:text-zinc-950'
+            : 'text-zinc-400 font-bold hover:text-white'
+        }`}
+        title="Tools & Operations"
+      >
+        <div className="relative">
+          <SlidersHorizontal className={`w-5 h-5 ${isToolsOpen ? 'text-[#E05A47] stroke-[2.5]' : ''}`} />
+        </div>
+        <span className="text-[10px] uppercase tracking-tighter mt-1">Tools</span>
+      </button>
 
       {/* 5. AI Ops Assistant Chat */}
       <button
