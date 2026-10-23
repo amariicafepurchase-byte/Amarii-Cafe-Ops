@@ -82,6 +82,7 @@ import { PullToRefresh } from './components/PullToRefresh';
 import { ChecklistsSidebar, ParentChecklistInfo } from './components/ChecklistsSidebar';
 import { PREDEFINED_CHECKLIST_TEMPLATES, STATION_DEFAULT_HEADERS } from './data/checklistTemplates';
 import { SubmissionSuccessModal, SubmissionSuccessData } from './components/SubmissionSuccessModal';
+import firebaseConfigData from '../firebase-applet-config.json';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { useTheme } from './context/ThemeContext';
 import { useAuth } from './context/AuthContext';
@@ -3188,6 +3189,31 @@ export default function App() {
               <X className="w-4 h-4 stroke-[2.5]" />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Firebase Daily Free Quota Limit Exceeded Alert Banner */}
+      {Boolean(lastFirestoreError && (lastFirestoreError.toLowerCase().includes('quota') || lastFirestoreError.toLowerCase().includes('resource-exhausted'))) && (
+        <div id="firebase-quota-exceeded-banner" className="bg-amber-600 text-white px-4 py-2.5 text-xs shadow-md border-b-2 border-amber-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2 z-40">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-5 h-5 shrink-0 stroke-[2.5]" />
+            <div>
+              <span className="font-black uppercase tracking-wide block">
+                ⚠️ Firebase Daily Read Quota Limit Reached
+              </span>
+              <span className="text-amber-100 text-[11px]">
+                App is operating seamlessly in <strong>Offline Local Cache Mode</strong>. All data and updates are saved locally and will auto-sync when quota resets tomorrow.
+              </span>
+            </div>
+          </div>
+          <a
+            href={`https://console.firebase.google.com/project/${firebaseConfigData.projectId}/firestore/databases/${firebaseConfigData.firestoreDatabaseId || '(default)'}/data?openUpgradeDialog=true`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-3 py-1.5 bg-black hover:bg-zinc-800 text-white text-[11px] font-black uppercase tracking-wider rounded shrink-0 text-center transition shadow cursor-pointer"
+          >
+            Upgrade Database Limits ↗
+          </a>
         </div>
       )}
 

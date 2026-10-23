@@ -291,6 +291,30 @@ export const FirestoreDiagnosticModal: React.FC<FirestoreDiagnosticProps> = ({
             </div>
           </div>
 
+          {/* Quota Exceeded Alert Banner & Upgrade Link */}
+          {Boolean(lastError && (lastError.toLowerCase().includes('quota') || lastError.toLowerCase().includes('resource-exhausted'))) && (
+            <div className="p-4 bg-amber-50 dark:bg-amber-950/70 border-2 border-amber-500 rounded-xs text-amber-950 dark:text-amber-100 space-y-2">
+              <div className="flex items-center gap-2 font-black text-amber-800 dark:text-amber-200 text-xs sm:text-sm uppercase tracking-tight">
+                <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
+                <span>⚠️ Firebase Daily Free Tier Read Quota Reached</span>
+              </div>
+              <p className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">
+                The free daily read quota for this Firestore database has been reached for today. The application is running seamlessly on <strong>Offline Local Cache Mode</strong>.
+              </p>
+              <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                All staff logins, checklist entries, and updates are saved locally and will auto-sync to the cloud once quota resets tomorrow, or you can upgrade database limits in Firebase Console below:
+              </p>
+              <a
+                href={`https://console.firebase.google.com/project/${firebaseConfigData.projectId}/firestore/databases/${firebaseConfigData.firestoreDatabaseId || '(default)'}/data?openUpgradeDialog=true`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-600 hover:bg-amber-500 text-white font-black text-xs uppercase tracking-wider rounded shadow transition cursor-pointer"
+              >
+                <span>Upgrade Firebase Quota Limits ↗</span>
+              </a>
+            </div>
+          )}
+
           {/* Active Synced Documents Counter Grid */}
           <div>
             <div className="flex items-center justify-between mb-2">

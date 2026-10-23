@@ -16,6 +16,7 @@ import {
 import firebaseConfigData from '../../firebase-applet-config.json';
 import { TaskItem, StaffMember, ShiftRecord, Outlet, INITIAL_OUTLETS, DEFAULT_OUTLET } from '../types';
 import { INITIAL_STAFF } from '../data/staffData';
+import { INITIAL_DAILY_TASKS } from '../data/defaultTasks';
 
 const firebaseConfig = {
   apiKey: firebaseConfigData.apiKey,
@@ -160,18 +161,23 @@ export function subscribeToTasks(onUpdate: (tasks: TaskItem[], fromCache?: boole
       } catch (e) {}
     },
     (err) => {
-      console.warn('[Firestore DEBUG] Tasks listener note (falling back to local cache):', err.message);
+      console.warn('[Firestore DEBUG] Tasks listener note (falling back to local cache/defaults):', err.message);
       try {
         const cached = localStorage.getItem('amarii_tasks_cache');
         const deletedIds = getDeletedTaskIds();
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed)) {
+          if (Array.isArray(parsed) && parsed.length > 0) {
             const filtered = parsed.filter((t: any) => t && t.id && !deletedIds.has(t.id));
-            onUpdate(filtered, true);
+            if (filtered.length > 0) {
+              onUpdate(filtered, true);
+              if (onError) onError(err);
+              return;
+            }
           }
         }
       } catch (e) {}
+      onUpdate(INITIAL_DAILY_TASKS, true);
       if (onError) onError(err);
     }
   );
@@ -189,11 +195,27 @@ export async function fetchTasksOnce(): Promise<TaskItem[]> {
         items.push({ id: d.id, ...(d.data() as Omit<TaskItem, 'id'>) });
       }
     });
-    return items;
+    if (items.length > 0) {
+      try {
+        localStorage.setItem('amarii_tasks_cache', JSON.stringify(items));
+      } catch (e) {}
+      return items;
+    }
   } catch (err) {
-    console.error('Error fetching tasks from Firestore:', err);
-    return [];
+    console.warn('Error fetching tasks from Firestore (falling back to cache/defaults):', err);
   }
+
+  try {
+    const cached = localStorage.getItem('amarii_tasks_cache');
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (e) {}
+
+  return INITIAL_DAILY_TASKS;
 }
 
 // Fetch Staff Once (useful for pull-to-refresh or explicit sync)
@@ -215,11 +237,27 @@ export async function fetchStaffOnce(): Promise<StaffMember[]> {
       }
     });
 
-    return items;
+    if (items.length > 0) {
+      try {
+        localStorage.setItem('amarii_staff_list_cache', JSON.stringify(items));
+      } catch (e) {}
+      return items;
+    }
   } catch (err) {
-    console.error('Error fetching staff from Firestore:', err);
-    return [];
+    console.warn('Error fetching staff from Firestore (falling back to cache/defaults):', err);
   }
+
+  try {
+    const cached = localStorage.getItem('amarii_staff_list_cache');
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (e) {}
+
+  return INITIAL_STAFF;
 }
 
 // List of dummy / legacy staff IDs to ignore and permanently purge
@@ -285,16 +323,19 @@ export function subscribeToStaff(onUpdate: (staff: StaffMember[], fromCache?: bo
       }
     },
     (err) => {
-      console.warn('[Firestore DEBUG] Staff listener note (falling back to local cache):', err.message);
+      console.warn('[Firestore DEBUG] Staff listener note (falling back to local cache/defaults):', err.message);
       try {
         const cached = localStorage.getItem('amarii_staff_list_cache');
         if (cached) {
           const parsed = JSON.parse(cached);
           if (Array.isArray(parsed) && parsed.length > 0) {
             onUpdate(parsed, true);
+            if (onError) onError(err);
+            return;
           }
         }
       } catch (e) {}
+      onUpdate(INITIAL_STAFF, true);
       if (onError) onError(err);
     }
   );
