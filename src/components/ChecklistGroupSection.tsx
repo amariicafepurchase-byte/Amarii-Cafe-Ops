@@ -29,8 +29,6 @@ import {
   Move,
   Minimize2,
   Maximize2,
-  CheckSquare,
-  Square,
 } from 'lucide-react';
 import { TaskItem, ChecklistHeader, TaskMedia, StaffMember, HEADER_TIME_SUGGESTIONS } from '../types';
 import { TaskCard } from './TaskCard';
@@ -48,6 +46,7 @@ interface ChecklistGroupSectionProps {
   onDeleteTask?: (taskId: string) => void;
   onUnpackSubTasks?: (taskId: string) => void;
   onDeleteChecklist?: (headerName: string) => void;
+  onEditChecklist?: (headerName: string) => void;
   onUpgradeChecklist?: (headerName: string) => void;
   onRenameChecklist?: (oldHeader: string, newHeader: string) => void;
   onViewMedia?: (media: TaskMedia) => void;
@@ -75,6 +74,7 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
   onDeleteTask,
   onUnpackSubTasks,
   onDeleteChecklist,
+  onEditChecklist,
   onUpgradeChecklist,
   onRenameChecklist,
   onViewMedia,
@@ -106,8 +106,6 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
   const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
   const [submittedTasksSnapshot, setSubmittedTasksSnapshot] = useState<TaskItem[]>([]);
   const [isFloatingMinimized, setIsFloatingMinimized] = useState<boolean>(false);
-  const [isBulkSelectActive, setIsBulkSelectActive] = useState<boolean>(false);
-  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
 
   const safeTasks = Array.isArray(tasks) ? tasks : [];
   const baseTasksForStats = allGroupTasks && allGroupTasks.length > 0 ? allGroupTasks : safeTasks;
@@ -383,90 +381,58 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
               </div>
             </div>
 
-            {/* Checklist Action Controls */}
-            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 shrink-0">
-              {/* 1. Bulk Actions Toggle Button */}
-              {safeTasks.length > 0 && (
+            {/* Admin Controls & Section Toggle */}
+            <div className="flex items-center gap-2 shrink-0">
+              {isAdmin && !isStaff && onAddTaskToHeader && (
                 <button
                   type="button"
-                  id={`bulk-actions-toggle-${resolvedHeaderName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
+                  onClick={() => onAddTaskToHeader(resolvedHeaderName)}
+                  className="px-2.5 py-1 text-xs font-semibold bg-zinc-100 hover:bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200 rounded cursor-pointer transition flex items-center gap-1"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Question</span>
+                </button>
+              )}
+
+              {isAdmin && !isStaff && onEditChecklist && (
+                <button
+                  type="button"
+                  onClick={() => onEditChecklist(resolvedHeaderName)}
+                  className="px-2.5 py-1 text-xs font-bold bg-[#673ab7] hover:bg-[#58309e] text-white rounded cursor-pointer transition flex items-center gap-1.5 shadow-xs"
+                  title="Edit full checklist and all questions"
+                >
+                  <Edit2 className="w-3.5 h-3.5" />
+                  <span>Edit Checklist</span>
+                </button>
+              )}
+
+              {isAdmin && !isStaff && onDeleteChecklist && (
+                <button
+                  type="button"
                   onClick={() => {
-                    const nextMode = !isBulkSelectActive;
-                    setIsBulkSelectActive(nextMode);
-                    if (nextMode) {
-                      setSelectedTaskIds(new Set(safeTasks.map((t) => t.id)));
+                    if (confirmDeleteChecklist) {
+                      onDeleteChecklist(resolvedHeaderName);
+                      setConfirmDeleteChecklist(false);
                     } else {
-                      setSelectedTaskIds(new Set());
+                      setConfirmDeleteChecklist(true);
+                      setTimeout(() => setConfirmDeleteChecklist(false), 4000);
                     }
                   }}
-                  className={`px-2.5 py-1.5 text-xs font-black uppercase tracking-tight rounded-md transition flex items-center gap-1.5 cursor-pointer shadow-xs ${
-                    isBulkSelectActive
-                      ? 'bg-[#673ab7] text-white border border-purple-400'
-                      : isLightMode
-                      ? 'bg-purple-100 hover:bg-purple-200 text-[#673ab7] border border-purple-200'
-                      : 'bg-purple-950/80 hover:bg-purple-900 text-purple-300 border border-purple-800'
+                  className={`p-1.5 rounded cursor-pointer text-xs font-bold transition ${
+                    confirmDeleteChecklist
+                      ? 'bg-red-600 text-white'
+                      : 'text-zinc-400 hover:text-red-500'
                   }`}
-                  title="Toggle bulk action mode to select multiple checklist questions"
+                  title={confirmDeleteChecklist ? 'Click again to confirm delete' : 'Delete checklist'}
                 >
-                  <FileCheck2 className="w-3.5 h-3.5 stroke-[2.5]" />
-                  <span>{isBulkSelectActive ? 'Exit Bulk' : 'Bulk Actions'}</span>
-                  {selectedTaskIds.size > 0 && (
-                    <span className="px-1.5 py-0.2 rounded-full bg-white/20 text-white text-[10px] font-black">
-                      {selectedTaskIds.size}
-                    </span>
-                  )}
+                  <Trash2 className="w-4 h-4" />
                 </button>
               )}
 
-              {/* 2. Add Question Button */}
-              {onAddTaskToHeader && (
-                <button
-                  type="button"
-                  id={`add-question-btn-${resolvedHeaderName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
-                  onClick={() => onAddTaskToHeader(resolvedHeaderName)}
-                  className="px-2.5 py-1.5 text-xs font-bold uppercase tracking-tight bg-zinc-100 hover:bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-100 border border-zinc-300 dark:border-zinc-700 rounded-md cursor-pointer transition flex items-center gap-1"
-                  title="Add a new question to this checklist"
-                >
-                  <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-                  <span className="hidden sm:inline">+ Question</span>
-                </button>
-              )}
-
-              {/* 3. Prominent Delete Checklist Button */}
-              <button
-                type="button"
-                id={`delete-checklist-btn-${resolvedHeaderName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
-                onClick={() => {
-                  if (confirmDeleteChecklist) {
-                    if (onDeleteChecklist) {
-                      onDeleteChecklist(resolvedHeaderName);
-                    } else if (onDeleteTask) {
-                      safeTasks.forEach((t) => onDeleteTask(t.id));
-                    }
-                    setConfirmDeleteChecklist(false);
-                  } else {
-                    setConfirmDeleteChecklist(true);
-                    setTimeout(() => setConfirmDeleteChecklist(false), 5000);
-                  }
-                }}
-                className={`px-2.5 py-1.5 rounded-md cursor-pointer text-xs font-black uppercase tracking-tight transition flex items-center gap-1.5 border shadow-xs ${
-                  confirmDeleteChecklist
-                    ? 'bg-red-600 text-white border-red-600 animate-pulse'
-                    : isLightMode
-                    ? 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200'
-                    : 'bg-red-950/60 hover:bg-red-900 text-red-300 border-red-800'
-                }`}
-                title={confirmDeleteChecklist ? 'Click again to confirm deleting this checklist' : 'Delete checklist'}
-              >
-                <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
-                <span>{confirmDeleteChecklist ? 'Confirm Delete?' : 'Delete Checklist'}</span>
-              </button>
-
-              {/* 4. Collapse / Expand Section */}
               <button
                 type="button"
                 onClick={() => setIsExpanded(!isExpanded)}
-                className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-white rounded-md cursor-pointer"
+                className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-white rounded cursor-pointer"
                 aria-label={isExpanded ? 'Collapse' : 'Expand'}
               >
                 {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
@@ -495,166 +461,37 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
         </div>
       </div>
 
-      {/* 2. Questions List & Bulk Actions Toolbar */}
+      {/* 2. Questions List (Tasks in Google Form Cards) */}
       {isExpanded && (
-        <div className="space-y-2.5">
-          {/* Bulk Action Sticky Control Toolbar */}
-          {isBulkSelectActive && (
-            <div className="p-3 bg-zinc-950 text-white rounded-lg border-2 border-[#673ab7] shadow-xl flex flex-wrap items-center justify-between gap-3 animate-in fade-in duration-150">
-              <div className="flex items-center gap-2">
-                <span className="w-7 h-7 rounded-full bg-[#673ab7] text-white flex items-center justify-center font-black text-xs shadow">
-                  {selectedTaskIds.size}
-                </span>
-                <div>
-                  <span className="text-xs font-black uppercase tracking-tight block text-white">
-                    {selectedTaskIds.size} of {safeTasks.length} Questions Selected
-                  </span>
-                  <span className="text-[10px] text-purple-300">
-                    Check questions below to apply bulk updates
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Select All / Deselect All */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (selectedTaskIds.size === safeTasks.length) {
-                      setSelectedTaskIds(new Set());
-                    } else {
-                      setSelectedTaskIds(new Set(safeTasks.map((t) => t.id)));
-                    }
-                  }}
-                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold uppercase tracking-tight rounded cursor-pointer border border-zinc-700"
-                >
-                  {selectedTaskIds.size === safeTasks.length ? 'Deselect All' : 'Select All'}
-                </button>
-
-                {/* Bulk Mark YES */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    selectedTaskIds.forEach((id) => {
-                      const task = safeTasks.find((t) => t.id === id);
-                      if (task && !task.completed) {
-                        onToggleTask(id);
-                      }
-                    });
-                  }}
-                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase tracking-tight rounded cursor-pointer flex items-center gap-1 shadow-xs"
-                >
-                  <CheckCheck className="w-3.5 h-3.5 stroke-[2.5]" />
-                  <span>Mark Selected YES</span>
-                </button>
-
-                {/* Bulk Clear Answers */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    selectedTaskIds.forEach((id) => {
-                      const task = safeTasks.find((t) => t.id === id);
-                      if (task && task.completed) {
-                        onToggleTask(id);
-                      }
-                    });
-                  }}
-                  className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold uppercase tracking-tight rounded cursor-pointer"
-                >
-                  Clear Answers
-                </button>
-
-                {/* Bulk Delete Selected Questions */}
-                {onDeleteTask && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      selectedTaskIds.forEach((id) => onDeleteTask(id));
-                      setSelectedTaskIds(new Set());
-                    }}
-                    className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white text-xs font-black uppercase tracking-tight rounded cursor-pointer flex items-center gap-1 shadow-xs"
-                  >
-                    <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
-                    <span>Delete Selected ({selectedTaskIds.size})</span>
-                  </button>
-                )}
-
-                {/* Close Bulk Actions */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsBulkSelectActive(false);
-                    setSelectedTaskIds(new Set());
-                  }}
-                  className="p-1 text-zinc-400 hover:text-white rounded cursor-pointer"
-                  title="Close Bulk Mode"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
+        <div className="space-y-2 sm:space-y-2.5">
           {safeTasks.length === 0 ? (
             <div className="p-6 text-center bg-white dark:bg-[#1a231e] rounded-lg border border-zinc-200 dark:border-zinc-800 text-zinc-500 text-sm">
               No questions in this checklist.
             </div>
           ) : (
             <AnimatePresence mode="popLayout" initial={false}>
-              {safeTasks.map((task, idx) => {
-                const isSelected = selectedTaskIds.has(task.id);
-                return (
-                  <div
-                    key={task.id ? `task-card-wrap-${resolvedHeaderName}-${task.id}-${idx}` : `task-card-wrap-${resolvedHeaderName}-${idx}`}
-                    className={`relative transition-all ${
-                      isBulkSelectActive ? 'pl-8 sm:pl-10' : ''
-                    }`}
-                  >
-                    {/* Checkbox Overlay in Bulk Select Mode */}
-                    {isBulkSelectActive && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedTaskIds((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(task.id)) next.delete(task.id);
-                            else next.add(task.id);
-                            return next;
-                          });
-                        }}
-                        className="absolute left-1 top-4 z-20 p-1 cursor-pointer"
-                        aria-label={`Select task ${task.title}`}
-                      >
-                        {isSelected ? (
-                          <CheckSquare className="w-5 h-5 text-[#673ab7] fill-purple-100 dark:fill-purple-950" />
-                        ) : (
-                          <Square className="w-5 h-5 text-zinc-400 dark:text-zinc-600" />
-                        )}
-                      </button>
-                    )}
-
-                    <TaskCard
-                      task={task}
-                      index={idx}
-                      onToggle={onToggleTask}
-                      onEditTask={onEditTask}
-                      onDeleteTask={onDeleteTask}
-                      onUnpackSubTasks={onUnpackSubTasks}
-                      onViewMedia={onViewMedia}
-                      onAddMediaToTask={onAddMediaToTask}
-                      onUpdateTaskNote={onUpdateTaskNote}
-                      onToggleSubTask={onToggleSubTask}
-                      onAddSubTaskMedia={onAddSubTaskMedia}
-                      onUpdateSubTaskNote={onUpdateSubTaskNote}
-                      onApproveTask={onApproveTask}
-                      onRejectTask={onRejectTask}
-                      staffList={staffList}
-                      isBlocked={blockedTaskId === task.id}
-                      isLocked={false}
-                    />
-                  </div>
-                );
-              })}
+              {safeTasks.map((task, idx) => (
+                <TaskCard
+                  key={task.id ? `task-card-${resolvedHeaderName}-${task.id}-${idx}` : `task-card-${resolvedHeaderName}-${idx}`}
+                  task={task}
+                  index={idx}
+                  onToggle={onToggleTask}
+                  onEditTask={onEditTask}
+                  onDeleteTask={onDeleteTask}
+                  onUnpackSubTasks={onUnpackSubTasks}
+                  onViewMedia={onViewMedia}
+                  onAddMediaToTask={onAddMediaToTask}
+                  onUpdateTaskNote={onUpdateTaskNote}
+                  onToggleSubTask={onToggleSubTask}
+                  onAddSubTaskMedia={onAddSubTaskMedia}
+                  onUpdateSubTaskNote={onUpdateSubTaskNote}
+                  onApproveTask={onApproveTask}
+                  onRejectTask={onRejectTask}
+                  staffList={staffList}
+                  isBlocked={blockedTaskId === task.id}
+                  isLocked={false}
+                />
+              ))}
             </AnimatePresence>
           )}
 
