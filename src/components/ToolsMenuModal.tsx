@@ -20,6 +20,7 @@ import {
   BellRing,
   Volume2,
   AlertTriangle,
+  HardDrive,
 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
@@ -31,6 +32,7 @@ interface ToolsMenuModalProps {
   onOpenTaskRegister?: () => void;
   onToggleAnalytics?: () => void;
   onOpenPdfModal?: () => void;
+  onOpenGoogleDrive?: () => void;
   onOpenOutletModal?: () => void;
   onOpenDataCleanup?: () => void;
   onOpenPasteModal?: () => void;
@@ -60,6 +62,7 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
   onOpenTaskRegister,
   onToggleAnalytics,
   onOpenPdfModal,
+  onOpenGoogleDrive,
   onOpenOutletModal,
   onOpenDataCleanup,
   onOpenPasteModal,
@@ -303,6 +306,38 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
               <div className="flex-1">
                 <div className="font-black uppercase text-[11px] tracking-tight">Download PDF Shift Report</div>
                 <div className="text-[10px] text-zinc-500 font-normal">Export signed audit summary with photos & notes</div>
+              </div>
+            </button>
+          )}
+
+          {/* Google Drive Storage & Cloud Backups */}
+          {onOpenGoogleDrive && (
+            <button
+              type="button"
+              id="tools-google-drive-btn"
+              onClick={() => {
+                onClose();
+                onOpenGoogleDrive();
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-3 text-xs font-bold text-left transition cursor-pointer rounded-sm border ${
+                isLightMode
+                  ? 'bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-950'
+                  : 'bg-blue-950/30 hover:bg-blue-900/50 border-blue-800 text-blue-200'
+              }`}
+            >
+              <div className="p-2 rounded bg-blue-600 text-white shrink-0">
+                <HardDrive className="w-4 h-4 stroke-[2.5]" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-black uppercase text-[11px] tracking-tight flex items-center justify-between">
+                  <span className="truncate">📁 Google Drive Storage & Backups</span>
+                  <span className="text-[9px] font-bold bg-blue-600 text-white px-1.5 py-0.2 rounded-xs shrink-0">
+                    CLOUD
+                  </span>
+                </div>
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 font-normal truncate">
+                  View, upload & sync shift audit reports directly in Google Drive
+                </div>
               </div>
             </button>
           )}

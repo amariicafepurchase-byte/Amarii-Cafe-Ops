@@ -305,7 +305,7 @@ export const FirestoreDiagnosticModal: React.FC<FirestoreDiagnosticProps> = ({
                 All staff logins, checklist entries, and updates are saved locally and will auto-sync to the cloud once quota resets tomorrow, or you can upgrade database limits in Firebase Console below:
               </p>
               <a
-                href={`https://console.firebase.google.com/project/${firebaseConfigData.projectId}/firestore/databases/${firebaseConfigData.firestoreDatabaseId || '(default)'}/data?openUpgradeDialog=true`}
+                href={`https://console.firebase.google.com/project/${firebaseConfigData.projectId}/firestore/databases/${(firebaseConfigData as any).firestoreDatabaseId || '(default)'}/data?openUpgradeDialog=true`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-600 hover:bg-amber-500 text-white font-black text-xs uppercase tracking-wider rounded shadow transition cursor-pointer"
@@ -395,8 +395,8 @@ export const FirestoreDiagnosticModal: React.FC<FirestoreDiagnosticProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
               <div className="flex flex-col">
                 <span className="text-[10px] text-zinc-500 uppercase font-sans font-bold">Database ID</span>
-                <span className="font-bold text-[#E05A47] truncate" title={firebaseConfigData.firestoreDatabaseId}>
-                  {firebaseConfigData.firestoreDatabaseId || '(default)'}
+                <span className="font-bold text-[#E05A47] truncate" title={(firebaseConfigData as any).firestoreDatabaseId}>
+                  {(firebaseConfigData as any).firestoreDatabaseId || '(default)'}
                 </span>
               </div>
 

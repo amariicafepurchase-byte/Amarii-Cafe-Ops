@@ -27,11 +27,11 @@ const firebaseConfig = {
   appId: firebaseConfigData.appId,
 };
 
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
 // Initialize Firestore with specific database ID if provided
-export const db: Firestore = firebaseConfigData.firestoreDatabaseId
-  ? getFirestore(app, firebaseConfigData.firestoreDatabaseId)
+export const db: Firestore = (firebaseConfigData as any).firestoreDatabaseId
+  ? getFirestore(app, (firebaseConfigData as any).firestoreDatabaseId)
   : getFirestore(app);
 
 const TASKS_COLLECTION = 'tasks';
@@ -60,7 +60,7 @@ export async function testFirestoreConnection(): Promise<FirestoreConnectionDiag
     return {
       connected: true,
       latencyMs,
-      databaseId: firebaseConfigData.firestoreDatabaseId || '(default)',
+      databaseId: (firebaseConfigData as any).firestoreDatabaseId || '(default)',
       projectId: firebaseConfigData.projectId,
       timestamp: new Date().toISOString(),
     };
@@ -71,7 +71,7 @@ export async function testFirestoreConnection(): Promise<FirestoreConnectionDiag
       return {
         connected: true,
         latencyMs,
-        databaseId: firebaseConfigData.firestoreDatabaseId || '(default)',
+        databaseId: (firebaseConfigData as any).firestoreDatabaseId || '(default)',
         projectId: firebaseConfigData.projectId,
         timestamp: new Date().toISOString(),
       };
@@ -80,7 +80,7 @@ export async function testFirestoreConnection(): Promise<FirestoreConnectionDiag
     return {
       connected: false,
       latencyMs,
-      databaseId: firebaseConfigData.firestoreDatabaseId || '(default)',
+      databaseId: (firebaseConfigData as any).firestoreDatabaseId || '(default)',
       projectId: firebaseConfigData.projectId,
       error: error instanceof Error ? error.message : String(error),
       timestamp: new Date().toISOString(),
@@ -670,7 +670,7 @@ export async function saveStaffToFirebase(staff: StaffMember): Promise<StaffMemb
   console.log('Timestamp:', new Date().toISOString());
   console.log('Target Collection:', STAFF_COLLECTION);
   console.log('Document ID:', staff?.id || 'MISSING_ID');
-  console.log('Target Database:', firebaseConfigData.firestoreDatabaseId || '(default)');
+  console.log('Target Database:', (firebaseConfigData as any).firestoreDatabaseId || '(default)');
   console.log('Staff Payload Summary:', {
     id: staff?.id,
     name: staff?.name,

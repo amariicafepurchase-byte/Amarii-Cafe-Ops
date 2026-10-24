@@ -156,11 +156,11 @@ export const ChecklistsSidebar: React.FC<ChecklistsSidebarProps> = ({
           </button>
 
           {/* Individual Parent Checklists */}
-          {checklists.map((chk) => {
+          {checklists.map((chk, chkIdx) => {
             const isSelected = selectedChecklist === chk.headerName;
             return (
               <button
-                key={chk.headerName}
+                key={`mob-chk-${chk.headerName || 'no-header'}-${chkIdx}`}
                 type="button"
                 onClick={() => onSelectChecklist(chk.headerName)}
                 className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition whitespace-nowrap flex items-center gap-2 shrink-0 cursor-pointer ${
@@ -257,11 +257,11 @@ export const ChecklistsSidebar: React.FC<ChecklistsSidebarProps> = ({
                 </button>
 
                 {/* Individual Parent Checklists */}
-                {checklists.map((chk) => {
+                {checklists.map((chk, chkIdx) => {
                   const isSelected = selectedChecklist === chk.headerName;
                   return (
                     <button
-                      key={chk.headerName}
+                      key={`mob-drawer-${chk.headerName || 'no-header'}-${chkIdx}`}
                       type="button"
                       onClick={() => {
                         onSelectChecklist(chk.headerName);
@@ -414,11 +414,11 @@ export const ChecklistsSidebar: React.FC<ChecklistsSidebarProps> = ({
             </button>
 
             {/* 2. Parent Categories / Individual Checklists */}
-            {filteredChecklists.map((chk) => {
+            {filteredChecklists.map((chk, chkIdx) => {
               const isSelected = selectedChecklist === chk.headerName;
               return (
                 <button
-                  key={chk.headerName}
+                  key={`desk-side-${chk.headerName || 'no-header'}-${chkIdx}`}
                   type="button"
                   id={`sidebar-chk-nav-${chk.headerName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
                   onClick={() => onSelectChecklist(chk.headerName)}

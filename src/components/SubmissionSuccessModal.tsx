@@ -15,7 +15,9 @@ import {
   Building2,
   Clock,
   Sparkles,
+  HardDrive,
 } from 'lucide-react';
+import { getDriveAccessToken, googleSignInForDrive, backupShiftToGoogleDrive } from '../lib/googleDrive';
 import { TaskItem, ShiftRecord } from '../types';
 import { generateChecklistAuditPdf } from '../utils/checklistPdfGenerator';
 import { shareChecklistUpdate } from '../utils/shareUtils';
@@ -135,6 +137,52 @@ export const SubmissionSuccessModal: React.FC<SubmissionSuccessModalProps> = ({
       setTimeout(() => setFeedbackNotice(null), 4000);
     } finally {
       setIsSharingWhatsApp(false);
+    }
+  };
+
+  const [isBackingUpDrive, setIsBackingUpDrive] = useState<boolean>(false);
+
+  const handleBackupToDrive = async () => {
+    setIsBackingUpDrive(true);
+    setFeedbackNotice('Connecting to Google Drive...');
+    try {
+      let activeToken = await getDriveAccessToken();
+      if (!activeToken) {
+        const result = await googleSignInForDrive();
+        activeToken = result?.accessToken || null;
+      }
+
+      if (!activeToken) {
+        setFeedbackNotice('Google Drive authorization required.');
+        setIsBackingUpDrive(false);
+        return;
+      }
+
+      setFeedbackNotice('Generating PDF & backing up to Google Drive...');
+      const pdfResult = await generateChecklistAuditPdf({
+        checklistHeader: checklistName,
+        department: station,
+        submittedBy: filledBy,
+        submittedAt: timestamp,
+        outletName: outletName,
+        tasks: tasks,
+      });
+
+      const pdfBlob = pdfResult.output('blob');
+      const backupResult = await backupShiftToGoogleDrive(
+        activeToken,
+        { checklistName, station, filledBy, timestamp, yesCount, noCount, photosCount, outletName },
+        pdfBlob
+      );
+
+      setFeedbackNotice(`✓ Backed up to Google Drive ("${backupResult.fileName}")!`);
+      setTimeout(() => setFeedbackNotice(null), 5000);
+    } catch (err: any) {
+      console.error('Google Drive backup error:', err);
+      setFeedbackNotice(`Drive Backup Error: ${err.message || 'Operation failed'}`);
+      setTimeout(() => setFeedbackNotice(null), 5000);
+    } finally {
+      setIsBackingUpDrive(false);
     }
   };
 
@@ -315,6 +363,27 @@ export const SubmissionSuccessModal: React.FC<SubmissionSuccessModalProps> = ({
                 <>
                   <Share2 className="w-4 h-4 stroke-[2.5]" />
                   <span>Share to WhatsApp</span>
+                </>
+              )}
+            </button>
+
+            {/* Backup to Google Drive Button */}
+            <button
+              type="button"
+              id="submission-success-backup-drive-btn"
+              onClick={handleBackupToDrive}
+              disabled={isBackingUpDrive}
+              className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black uppercase tracking-wider rounded-lg shadow-md transition cursor-pointer flex items-center justify-center gap-2 min-h-[44px] active:scale-98"
+            >
+              {isBackingUpDrive ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-white" />
+                  <span>Saving to Google Drive...</span>
+                </>
+              ) : (
+                <>
+                  <HardDrive className="w-4 h-4 stroke-[2.5]" />
+                  <span>Backup Report to Google Drive</span>
                 </>
               )}
             </button>

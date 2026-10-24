@@ -249,7 +249,7 @@ export const SubmissionDetailsModal: React.FC<SubmissionDetailsModalProps> = ({
 
               return (
                 <div
-                  key={task.id || `hist-task-${idx}`}
+                  key={`submission-task-${task.id || 'no-id'}-${idx}`}
                   className={`p-3.5 rounded-lg border transition-all ${
                     isLightMode
                       ? 'bg-white border-zinc-200'

@@ -22,6 +22,7 @@ export interface GeneratedChecklistPdf {
   file: File;
   filename: string;
   download: () => void;
+  output: (type: string) => any;
 }
 
 /**
@@ -487,6 +488,7 @@ export async function generateChecklistAuditPdf(
     blob,
     file,
     filename,
+    output: (type: string) => doc.output(type as any),
     download: () => {
       try {
         const url = URL.createObjectURL(blob);

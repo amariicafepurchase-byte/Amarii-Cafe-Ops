@@ -14,16 +14,25 @@ import {
   Square,
   AlertTriangle,
   FolderTree,
-  Wifi,
   WifiOff,
   RefreshCw,
   Cloud,
   Check,
+  Edit3,
+  Sliders,
+  ChevronDown,
+  ChevronUp,
+  Copy,
 } from 'lucide-react';
 import { TaskItem, TaskEditRequest } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { useTaskQueue } from '../hooks/useTaskQueue';
 import { useAuth } from '../context/AuthContext';
+import {
+  DEPARTMENT_BUNDLES,
+  DepartmentBundleDef,
+  DepartmentChecklistBatchEditorModal,
+} from './DepartmentChecklistBatchEditorModal';
 
 interface TaskManagementModalProps {
   isOpen: boolean;
@@ -38,6 +47,9 @@ interface TaskManagementModalProps {
   editRequests?: TaskEditRequest[];
   onApproveEditRequest?: (reqId: string) => void;
   onRejectEditRequest?: (reqId: string) => void;
+  onSaveBatchTasks?: (updatedTasks: TaskItem[], deletedIds: string[]) => Promise<void>;
+  onRestoreDefaultTemplates?: () => Promise<void>;
+  onResetToDefaultBundle?: (bundleKey: string) => Promise<void>;
 }
 
 export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
@@ -53,6 +65,9 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
   editRequests = [],
   onApproveEditRequest,
   onRejectEditRequest,
+  onSaveBatchTasks,
+  onRestoreDefaultTemplates,
+  onResetToDefaultBundle,
 }) => {
   const { isLightMode } = useTheme();
   const { isAdmin } = useAuth();
@@ -64,6 +79,11 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
   const [confirmBulkDelete, setConfirmBulkDelete] = useState<boolean>(false);
   const { queue, pendingCount, isOnline, isSyncing, triggerSync } = useTaskQueue();
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+
+  // Batch Editor Sub-Modal State
+  const [activeBatchBundle, setActiveBatchBundle] = useState<DepartmentBundleDef | null>(null);
+  const [expandedBundleMap, setExpandedBundleMap] = useState<Record<string, boolean>>({});
+  const [isRestoringAll, setIsRestoringAll] = useState(false);
 
   const handleTriggerSyncNow = async () => {
     try {
@@ -80,33 +100,74 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
     }
   };
 
-  // Group tasks by checklist header
-  const checklistGroups = useMemo(() => {
+  // Group tasks into the 5 Department Checklist Bundles
+  const departmentBundledGroups = useMemo(() => {
+    return DEPARTMENT_BUNDLES.map((bundle) => {
+      const matching = tasks.filter((t) => {
+        if (!t) return false;
+        const h = (t.checklistHeader || '').toLowerCase();
+        const d = (t.department || '').toLowerCase();
+        const isHeaderMatch = bundle.matchingHeaders.some((mh) => h.includes(mh.toLowerCase()));
+        const isDeptMatch = d.includes(bundle.department.toLowerCase());
+        return isHeaderMatch || isDeptMatch;
+      });
+
+      const total = matching.length;
+      const completed = matching.filter((t) => t.completed).length;
+      const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+      return {
+        bundle,
+        tasks: matching,
+        total,
+        completed,
+        percentage,
+      };
+    });
+  }, [tasks]);
+
+  // Other custom / unbundled checklist groups
+  const otherChecklistGroups = useMemo(() => {
+    const bundledTaskIds = new Set(
+      departmentBundledGroups.flatMap((g) => g.tasks.map((t) => t.id))
+    );
+
+    const remainingTasks = tasks.filter((t) => !bundledTaskIds.has(t.id));
     const map = new Map<string, TaskItem[]>();
-    tasks.forEach((t) => {
+    remainingTasks.forEach((t) => {
       const header = t.checklistHeader || 'General Operations';
       const existing = map.get(header) || [];
       existing.push(t);
       map.set(header, existing);
     });
 
-    const groups = Array.from(map.entries()).map(([header, groupTasks]) => {
+    return Array.from(map.entries()).map(([header, groupTasks]) => {
       const completed = groupTasks.filter((t) => t.completed).length;
       const total = groupTasks.length;
       const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
-      const department = groupTasks[0]?.department || 'General';
       return {
         header,
         tasks: groupTasks,
         total,
         completed,
         percentage,
-        department,
+        department: groupTasks[0]?.department || 'General',
       };
     });
+  }, [tasks, departmentBundledGroups]);
 
-    return groups.sort((a, b) => b.total - a.total);
-  }, [tasks]);
+  // Filter department bundles based on search
+  const filteredDepartmentBundles = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) return departmentBundledGroups;
+    return departmentBundledGroups.filter((g) => {
+      return (
+        g.bundle.title.toLowerCase().includes(q) ||
+        g.bundle.department.toLowerCase().includes(q) ||
+        g.tasks.some((t) => t.title.toLowerCase().includes(q))
+      );
+    });
+  }, [departmentBundledGroups, searchQuery]);
 
   // Filter tasks based on search
   const filteredTasks = useMemo(() => {
@@ -121,19 +182,6 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
       );
     });
   }, [tasks, searchQuery]);
-
-  // Filter checklist groups based on search
-  const filteredChecklistGroups = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
-    if (!q) return checklistGroups;
-    return checklistGroups.filter((g) => {
-      return (
-        g.header.toLowerCase().includes(q) ||
-        g.department.toLowerCase().includes(q) ||
-        g.tasks.some((t) => t.title.toLowerCase().includes(q))
-      );
-    });
-  }, [checklistGroups, searchQuery]);
 
   if (!isOpen) return null;
 
@@ -172,6 +220,38 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
     }
   };
 
+  // Restore All Default Templates
+  const handleRestoreAllTemplates = async () => {
+    if (!onRestoreDefaultTemplates) return;
+    setIsRestoringAll(true);
+    try {
+      await onRestoreDefaultTemplates();
+      setSyncFeedback('✓ All 5 department default templates re-seeded!');
+      setTimeout(() => setSyncFeedback(null), 3500);
+    } catch (e: any) {
+      console.error('Restore all templates error:', e);
+      alert(`Failed to restore templates: ${e?.message || 'Database error'}`);
+    } finally {
+      setIsRestoringAll(false);
+    }
+  };
+
+  // Save batch tasks wrapper
+  const handleSaveBatchWrapper = async (updatedTasks: TaskItem[], deletedIds: string[]) => {
+    if (onSaveBatchTasks) {
+      await onSaveBatchTasks(updatedTasks, deletedIds);
+    }
+  };
+
+  // Reset bundle template wrapper
+  const handleResetBundleWrapper = async (bundleKey: string) => {
+    if (onResetToDefaultBundle) {
+      await onResetToDefaultBundle(bundleKey);
+    } else if (onRestoreDefaultTemplates) {
+      await onRestoreDefaultTemplates();
+    }
+  };
+
   return (
     <AnimatePresence>
       <motion.div
@@ -186,7 +266,7 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
           initial={{ opacity: 0, scale: 0.95, y: 10 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 10 }}
-          className={`relative w-full max-w-5xl h-[90vh] sm:h-[85vh] flex flex-col shadow-2xl border-2 sm:border-4 ${
+          className={`relative w-full max-w-6xl h-[92vh] flex flex-col shadow-2xl border-2 sm:border-4 rounded-xl overflow-hidden ${
             isLightMode
               ? 'bg-zinc-50 border-zinc-300'
               : 'bg-[#0B140F] border-[#1D3528]'
@@ -195,56 +275,58 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
         >
           {/* Header */}
           <div
-            className={`p-4 sm:p-5 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-              isLightMode ? 'border-zinc-200 bg-white' : 'border-[#1D3528] bg-black/40'
+            className={`p-3.5 sm:p-4 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
+              isLightMode ? 'border-zinc-200 bg-zinc-50' : 'border-zinc-800 bg-zinc-900/90'
             }`}
           >
-            <div>
-              <div className="flex items-center gap-2">
-                <FolderTree className="w-5 h-5 text-emerald-500" />
-                <h2 className="text-xl sm:text-2xl font-black uppercase tracking-tight">
+            <div className="flex items-center gap-2">
+              <FolderTree className="w-4 h-4 text-emerald-500 shrink-0" />
+              <div>
+                <h2 className="text-base sm:text-lg font-black uppercase tracking-tight text-zinc-900 dark:text-zinc-100">
                   Checklist & Task Directory
                 </h2>
+                <p className="text-[10px] sm:text-xs text-zinc-500 dark:text-zinc-400 font-semibold">
+                  5 Department Checklists • Active Master Tasks ({tasks.length})
+                </p>
               </div>
-              <p
-                className={`text-xs font-bold uppercase tracking-widest mt-1 ${
-                  isLightMode ? 'text-zinc-500' : 'text-[#7D8F85]'
-                }`}
-              >
-                Manage checklists ({checklistGroups.length}) & active tasks ({tasks.length})
-              </p>
             </div>
 
-            <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
+            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
               {/* Search Bar */}
-              <div className="relative flex-1 sm:w-64">
-                <Search
-                  className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${
-                    isLightMode ? 'text-zinc-400' : 'text-zinc-500'
-                  }`}
-                />
+              <div className="relative flex-1 sm:w-56">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
                 <input
                   type="text"
                   placeholder="Search checklists or tasks..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className={`w-full pl-9 pr-4 py-1.5 text-xs sm:text-sm font-bold border-2 transition ${
+                  className={`w-full pl-8 pr-3 py-1 text-xs font-semibold border rounded-lg transition ${
                     isLightMode
-                      ? 'bg-white border-zinc-300 text-black focus:border-black placeholder:text-zinc-400'
-                      : 'bg-[#0A120E] border-[#1D3528] text-white focus:border-[#3A5A48] placeholder:text-zinc-600'
+                      ? 'bg-white border-zinc-200 text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-400'
+                      : 'bg-zinc-950 border-zinc-700 text-white placeholder:text-zinc-500 focus:border-zinc-500'
                   }`}
                 />
               </div>
+
+              {/* Load Default Template Button */}
+              {onRestoreDefaultTemplates && (
+                <button
+                  type="button"
+                  onClick={handleRestoreAllTemplates}
+                  disabled={isRestoringAll}
+                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold uppercase tracking-tight rounded-lg flex items-center gap-1.5 transition active:scale-95 cursor-pointer shadow-xs shrink-0"
+                  title="Instantly reload all 5 default department checklists"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRestoringAll ? 'animate-spin' : ''}`} />
+                  <span>{isRestoringAll ? 'Loading...' : 'Load Default Templates'}</span>
+                </button>
+              )}
 
               {/* Close Button */}
               <button
                 type="button"
                 onClick={onClose}
-                className={`p-2 border-2 transition cursor-pointer flex-shrink-0 ${
-                  isLightMode
-                    ? 'bg-zinc-200 hover:bg-zinc-300 border-zinc-300 text-black'
-                    : 'bg-[#1D3528] hover:bg-[#2A4A38] border-[#2A4A38] text-white'
-                }`}
+                className="p-1.5 text-zinc-400 hover:text-zinc-900 dark:hover:text-white rounded-lg transition cursor-pointer shrink-0"
                 aria-label="Close modal"
               >
                 <X className="w-5 h-5 stroke-[2.5]" />
@@ -255,7 +337,7 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
           {/* Offline & Local Queue Status Banner */}
           {(!isOnline || pendingCount > 0) && (
             <div
-              className={`px-4 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs font-bold border-b transition ${
+              className={`px-4 sm:px-6 py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-bold border-b transition ${
                 !isOnline
                   ? isLightMode
                     ? 'bg-amber-50 text-amber-950 border-amber-300'
@@ -274,11 +356,11 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                 <span>
                   {!isOnline ? (
                     <>
-                      <strong>Offline Mode Active:</strong> Any task or checklist modifications are safely stored in your local retry queue ({pendingCount} pending). They will automatically sync to Firestore once connection restores.
+                      <strong>Offline Mode Active:</strong> Checklist updates are stored locally ({pendingCount} pending) and will sync once connected.
                     </>
                   ) : (
                     <>
-                      <strong>Local Queue:</strong> {pendingCount} update{pendingCount === 1 ? '' : 's'} stored in local queue ready for Firestore sync.
+                      <strong>Local Queue:</strong> {pendingCount} update{pendingCount === 1 ? '' : 's'} ready for Firestore sync.
                     </>
                   )}
                 </span>
@@ -296,7 +378,7 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                     type="button"
                     onClick={handleTriggerSyncNow}
                     disabled={isSyncing}
-                    className="px-3 py-1 text-[11px] font-black uppercase tracking-tight bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white flex items-center gap-1.5 cursor-pointer shadow-sm transition border border-blue-700"
+                    className="px-3 py-1 text-[11px] font-black uppercase tracking-tight bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white flex items-center gap-1.5 cursor-pointer shadow-sm transition border border-blue-700 rounded"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
                     <span>{isSyncing ? 'Syncing...' : 'Sync Now'}</span>
@@ -308,236 +390,277 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
 
           {/* Tab Navigation */}
           <div
-            className={`px-4 sm:px-6 pt-3 flex items-center justify-between border-b ${
-              isLightMode ? 'bg-zinc-100 border-zinc-200' : 'bg-black/30 border-[#1D3528]'
+            className={`px-3 sm:px-4 py-1.5 flex items-center justify-between border-b gap-2 ${
+              isLightMode ? 'bg-zinc-100/80 border-zinc-200' : 'bg-zinc-950 border-zinc-800'
             }`}
           >
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 sm:gap-2 overflow-x-auto no-scrollbar">
               <button
                 type="button"
                 onClick={() => setActiveTab('checklists')}
-                className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-black uppercase tracking-tight flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
+                className={`px-3 py-1.5 text-xs font-black uppercase tracking-tight rounded-lg transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
                   activeTab === 'checklists'
-                    ? isLightMode
-                      ? 'border-zinc-950 text-zinc-950 bg-white shadow-sm'
-                      : 'border-emerald-400 text-white bg-emerald-950/40'
+                    ? 'bg-emerald-600 text-white shadow-xs'
                     : isLightMode
-                    ? 'border-transparent text-zinc-500 hover:text-zinc-900'
-                    : 'border-transparent text-zinc-400 hover:text-white'
+                    ? 'text-zinc-600 hover:bg-zinc-200/70'
+                    : 'text-zinc-400 hover:bg-zinc-800'
                 }`}
               >
-                <Layers className="w-4 h-4" />
-                <span>Checklists ({checklistGroups.length})</span>
+                <Layers className="w-3.5 h-3.5" />
+                <span>CHECKLISTS ({filteredDepartmentBundles.length})</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setActiveTab('tasks')}
-                className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-black uppercase tracking-tight flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
+                className={`px-3 py-1.5 text-xs font-black uppercase tracking-tight rounded-lg transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
                   activeTab === 'tasks'
-                    ? isLightMode
-                      ? 'border-zinc-950 text-zinc-950 bg-white shadow-sm'
-                      : 'border-emerald-400 text-white bg-emerald-950/40'
+                    ? 'bg-emerald-600 text-white shadow-xs'
                     : isLightMode
-                    ? 'border-transparent text-zinc-500 hover:text-zinc-900'
-                    : 'border-transparent text-zinc-400 hover:text-white'
+                    ? 'text-zinc-600 hover:bg-zinc-200/70'
+                    : 'text-zinc-400 hover:bg-zinc-800'
                 }`}
               >
-                <ListTodo className="w-4 h-4" />
-                <span>All Tasks ({tasks.length})</span>
+                <ListTodo className="w-3.5 h-3.5" />
+                <span>ALL INDIVIDUAL TASKS ({tasks.length})</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setActiveTab('requests')}
-                className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-black uppercase tracking-tight flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
+                className={`px-3 py-1.5 text-xs font-black uppercase tracking-tight rounded-lg transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
                   activeTab === 'requests'
-                    ? isLightMode
-                      ? 'border-amber-600 text-amber-900 bg-amber-50 shadow-sm'
-                      : 'border-amber-400 text-amber-300 bg-amber-950/40'
+                    ? 'bg-amber-600 text-white shadow-xs'
                     : isLightMode
-                    ? 'border-transparent text-zinc-500 hover:text-zinc-900'
-                    : 'border-transparent text-zinc-400 hover:text-white'
+                    ? 'text-zinc-600 hover:bg-zinc-200/70'
+                    : 'text-zinc-400 hover:bg-zinc-800'
                 }`}
               >
-                <AlertTriangle className="w-4 h-4 text-amber-500" />
-                <span>Edit Requests ({editRequests.filter((r) => r.status === 'pending').length})</span>
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>EDIT PROPOSALS ({editRequests.filter((r) => r.status === 'pending').length})</span>
               </button>
             </div>
 
-            {/* Quick action info */}
-            <div className="text-[11px] font-bold text-zinc-500 hidden md:block">
-              {activeTab === 'checklists'
-                ? 'Delete entire checklists or add tasks to them directly'
-                : activeTab === 'tasks'
-                ? 'Select tasks for bulk deletion or request task edits'
-                : 'Review & approve task edit requests submitted by Managers'}
+            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider hidden lg:block">
+              Batch department checklist editor & master task directory
             </div>
           </div>
 
-          {/* TAB 1: CHECKLISTS DIRECTORY */}
+          {/* TAB 1: 5 DEPARTMENT CHECKLIST BUNDLES */}
           {activeTab === 'checklists' && (
-            <div className="flex-1 overflow-auto p-4 sm:p-6 space-y-4">
-              {filteredChecklistGroups.length === 0 ? (
-                <div
-                  className={`p-8 text-center text-sm font-bold uppercase tracking-wider border-2 border-dashed ${
-                    isLightMode
-                      ? 'bg-white border-zinc-300 text-zinc-500'
-                      : 'bg-zinc-900/40 border-[#1D3528] text-zinc-400'
-                  }`}
-                >
-                  No checklists found matching "{searchQuery}".
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {filteredChecklistGroups.map((group) => {
-                    const isConfirmingDelete = confirmDeleteHeader === group.header;
-                    return (
+            <div className="flex-1 overflow-auto p-3 sm:p-4 space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                {filteredDepartmentBundles.map(({ bundle, tasks: bundleTasks, total, completed, percentage }) => {
+                  const isExpanded = Boolean(expandedBundleMap[bundle.key]);
+
+                  return (
+                    <div
+                      key={bundle.key}
+                      className={`p-3 rounded-lg border transition flex flex-col justify-between ${
+                        isLightMode
+                          ? 'bg-white border-zinc-200 hover:border-zinc-300 shadow-xs'
+                          : 'bg-zinc-900/90 border-zinc-800 hover:border-zinc-700'
+                      }`}
+                    >
+                      <div>
+                        {/* Header Row: Icon, Title, Department Badge, Inline Progress Pill */}
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-lg p-1 bg-zinc-100 dark:bg-zinc-800 rounded-md shrink-0">
+                              {bundle.icon}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                                  {bundle.department}
+                                </span>
+                                <span className="text-[10px] text-zinc-400">•</span>
+                                <span className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 truncate">
+                                  {bundle.defaultShiftOverview}
+                                </span>
+                              </div>
+                              <h3 className="text-xs sm:text-sm font-black uppercase tracking-tight text-zinc-900 dark:text-zinc-100 truncate">
+                                {bundle.title}
+                              </h3>
+                            </div>
+                          </div>
+
+                          {/* Inline Progress Pill */}
+                          <span
+                            className={`px-2 py-0.5 text-[10px] font-mono font-black rounded-full border shrink-0 ${
+                              percentage === 100
+                                ? 'bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
+                                : isLightMode
+                                ? 'bg-zinc-100 text-zinc-800 border-zinc-200'
+                                : 'bg-zinc-800 text-zinc-300 border-zinc-700'
+                            }`}
+                          >
+                            {completed}/{total} ({percentage}%)
+                          </span>
+                        </div>
+
+                        {/* Mini Progress Bar */}
+                        <div className="w-full h-1 my-2 bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full transition-all duration-300 rounded-full ${
+                              percentage === 100 ? 'bg-emerald-500' : 'bg-[#673ab7]'
+                            }`}
+                            style={{ width: `${percentage}%` }}
+                          />
+                        </div>
+
+                        {/* Compact Tasks Preview */}
+                        <div className="my-1.5">
+                          <div className="flex items-center justify-between text-[10px] font-bold text-zinc-400">
+                            <span>{total} Questions in bundle</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedBundleMap((prev) => ({
+                                  ...prev,
+                                  [bundle.key]: !prev[bundle.key],
+                                }))
+                              }
+                              className="hover:underline flex items-center gap-0.5 cursor-pointer text-zinc-500 dark:text-zinc-400"
+                            >
+                              <span>{isExpanded ? 'Hide' : 'Preview'}</span>
+                              {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                            </button>
+                          </div>
+
+                          {isExpanded && (
+                            <div className="mt-1 space-y-1 max-h-28 overflow-y-auto pr-1">
+                              {bundleTasks.length === 0 ? (
+                                <p className="text-[11px] italic text-zinc-500 p-1.5 border border-dashed rounded text-center">
+                                  No tasks loaded. Click <strong>"Open Full Checklist Editor"</strong> or <strong>"Reset"</strong>.
+                                </p>
+                              ) : (
+                                bundleTasks.map((t, idx) => (
+                                  <div
+                                    key={`bundle-preview-${bundle.key}-${t.id || 'no-id'}-${idx}`}
+                                    className={`text-[10px] sm:text-[11px] flex items-center justify-between gap-2 px-2 py-1 rounded border ${
+                                      isLightMode
+                                        ? 'bg-zinc-50 border-zinc-200 text-zinc-800'
+                                        : 'bg-zinc-950 border-zinc-800/80 text-zinc-200'
+                                    }`}
+                                  >
+                                    <span
+                                      className={`truncate font-semibold ${
+                                        t.completed ? 'line-through opacity-60' : ''
+                                      }`}
+                                      title={t.title}
+                                    >
+                                      {idx + 1}. {t.title}
+                                    </span>
+                                    <span className="text-[9px] font-mono text-zinc-500 shrink-0">
+                                      {t.startTime || t.deadline || 'Anytime'}
+                                    </span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Sleek Horizontal Action Row */}
+                      <div className="flex items-center justify-between gap-2 pt-2.5 mt-2 border-t border-zinc-100 dark:border-zinc-800/80">
+                        <button
+                          type="button"
+                          onClick={() => setActiveBatchBundle(bundle)}
+                          className="flex-1 py-1.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold uppercase tracking-tight rounded-md shadow-xs flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer"
+                          title="Open full-screen batch editor"
+                        >
+                          <Edit3 className="w-3.5 h-3.5 stroke-[2.5]" />
+                          <span>Open Full Checklist Editor</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleResetBundleWrapper(bundle.key)}
+                          className={`py-1.5 px-2.5 text-[11px] font-bold uppercase tracking-tight rounded-md border transition flex items-center justify-center gap-1 cursor-pointer shrink-0 ${
+                            isLightMode
+                              ? 'bg-zinc-100 hover:bg-zinc-200 text-zinc-800 border-zinc-300'
+                              : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border-zinc-700'
+                          }`}
+                          title="Reset to default template"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          <span>Reset</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Other Custom Checklist Groups (if any) */}
+              {otherChecklistGroups.length > 0 && (
+                <div className="pt-3 border-t border-zinc-200 dark:border-zinc-800 space-y-2">
+                  <h4 className="text-[11px] font-black uppercase tracking-wider text-zinc-400">
+                    Additional Custom Checklists ({otherChecklistGroups.length})
+                  </h4>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {otherChecklistGroups.map((group) => (
                       <div
                         key={group.header}
-                        className={`p-4 border-2 transition flex flex-col justify-between ${
+                        className={`p-3 border rounded-lg transition flex flex-col justify-between ${
                           isLightMode
-                            ? 'bg-white border-zinc-200 hover:border-zinc-400 shadow-sm'
-                            : 'bg-[#0E1A14] border-[#1D3528] hover:border-[#2A4A38]'
+                            ? 'bg-white border-zinc-200'
+                            : 'bg-zinc-900/90 border-zinc-800'
                         }`}
                       >
                         <div>
-                          {/* Header & Meta */}
                           <div className="flex items-start justify-between gap-2">
                             <div>
-                              <span
-                                className={`text-[10px] font-black uppercase px-2 py-0.5 border tracking-wider ${
-                                  isLightMode
-                                    ? 'bg-zinc-100 border-zinc-300 text-zinc-700'
-                                    : 'bg-black/60 border-[#1D3528] text-emerald-400'
-                                }`}
-                              >
+                              <span className="text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
                                 {group.department}
                               </span>
-                              <h3 className="text-base sm:text-lg font-black uppercase tracking-tight mt-1.5 line-clamp-1">
+                              <h3 className="text-xs sm:text-sm font-black uppercase text-zinc-900 dark:text-zinc-100">
                                 {group.header}
                               </h3>
                             </div>
-
-                            <span
-                              className={`text-xs font-mono font-black px-2 py-1 border ${
-                                group.percentage === 100
-                                  ? 'bg-emerald-500/20 text-emerald-500 border-emerald-500/40'
-                                  : isLightMode
-                                  ? 'bg-zinc-100 text-zinc-800 border-zinc-300'
-                                  : 'bg-zinc-900 text-zinc-300 border-zinc-800'
-                              }`}
-                            >
-                              {group.completed}/{group.total} Done ({group.percentage}%)
+                            <span className="text-[10px] font-mono font-bold px-2 py-0.5 border rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300">
+                              {group.completed}/{group.total} Done
                             </span>
                           </div>
 
-                          {/* Progress Bar */}
-                          <div
-                            className={`w-full h-1.5 my-3 overflow-hidden ${
-                              isLightMode ? 'bg-zinc-100' : 'bg-black'
-                            }`}
-                          >
-                            <div
-                              className="h-full bg-emerald-500 transition-all duration-300"
-                              style={{ width: `${group.percentage}%` }}
-                            />
-                          </div>
-
-                          {/* Tasks Preview List */}
-                          <div className="space-y-1 my-2 max-h-32 overflow-y-auto pr-1">
-                            {group.tasks.map((t) => (
-                              <div
-                                key={t.id}
-                                className={`text-xs flex items-center justify-between gap-2 p-1.5 rounded-sm ${
-                                  isLightMode ? 'bg-zinc-50' : 'bg-black/40'
-                                }`}
-                              >
-                                <span
-                                  className={`truncate font-semibold ${
-                                    t.completed ? 'line-through opacity-60' : ''
-                                  }`}
-                                  title={t.title}
-                                >
-                                  {t.title}
-                                </span>
-                                <span className="text-[10px] font-mono text-zinc-500 flex-shrink-0">
-                                  {t.startTime || t.deadline || 'Anytime'}
-                                </span>
+                          <div className="space-y-1 my-1.5 max-h-20 overflow-y-auto">
+                            {group.tasks.map((t, tIdx) => (
+                              <div key={`other-grp-${group.header}-${t.id || 'no-id'}-${tIdx}`} className="text-[10px] sm:text-[11px] px-2 py-0.5 bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800/80 rounded truncate">
+                                {t.title}
                               </div>
                             ))}
                           </div>
                         </div>
 
-                        {/* Action Buttons */}
-                        <div className="flex items-center justify-between gap-2 pt-3 mt-2 border-t border-zinc-200 dark:border-[#1D3528]">
-                          {onAddTaskToHeader && (
+                        {onDeleteChecklist && (
+                          <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800 flex justify-end">
                             <button
                               type="button"
-                              onClick={() => {
-                                onClose();
-                                onAddTaskToHeader(group.header);
-                              }}
-                              className={`text-xs font-black uppercase tracking-tight px-3 py-1.5 border transition flex items-center gap-1 cursor-pointer ${
-                                isLightMode
-                                  ? 'bg-zinc-950 text-white hover:bg-zinc-800 border-zinc-950'
-                                  : 'bg-white text-black hover:bg-zinc-200 border-white'
-                              }`}
+                              onClick={() => onDeleteChecklist(group.header)}
+                              className="px-2 py-1 text-[11px] font-bold text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded flex items-center gap-1 cursor-pointer"
                             >
-                              <Plus className="w-3.5 h-3.5 stroke-[3]" />
-                              <span>+ Add Task</span>
+                              <Trash2 className="w-3.5 h-3.5" /> Delete Group
                             </button>
-                          )}
-
-                          {onDeleteChecklist && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (isConfirmingDelete) {
-                                  onDeleteChecklist(group.header);
-                                  setConfirmDeleteHeader(null);
-                                } else {
-                                  setConfirmDeleteHeader(group.header);
-                                  setTimeout(() => setConfirmDeleteHeader(null), 4000);
-                                }
-                              }}
-                              className={`text-xs font-black uppercase tracking-tight px-3 py-1.5 border transition flex items-center gap-1.5 cursor-pointer ml-auto ${
-                                isConfirmingDelete
-                                  ? 'bg-red-600 text-white border-red-600 animate-pulse'
-                                  : isLightMode
-                                  ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
-                                  : 'bg-red-950/30 hover:bg-red-900/60 text-red-400 border-red-900/50'
-                              }`}
-                              title={
-                                isConfirmingDelete
-                                  ? 'Click to permanently delete this checklist and all its tasks'
-                                  : 'Delete entire checklist'
-                              }
-                            >
-                              <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
-                              <span>
-                                {isConfirmingDelete
-                                  ? `Confirm Delete (${group.total})?`
-                                  : 'Delete Checklist'}
-                              </span>
-                            </button>
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </div>
-                    );
-                  })}
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
           )}
 
-          {/* TAB 2: ALL TASKS & BULK DELETE */}
+          {/* TAB 2: ALL INDIVIDUAL TASKS & BULK DELETE */}
           {activeTab === 'tasks' && (
             <div className="flex-1 overflow-hidden flex flex-col p-4 sm:p-6">
               {/* Bulk Selection Bar */}
               {selectedTaskIds.length > 0 && (
                 <div
-                  className={`p-3 mb-3 border-2 flex items-center justify-between gap-3 ${
+                  className={`p-3 mb-3 border-2 rounded-lg flex items-center justify-between gap-3 ${
                     isLightMode
                       ? 'bg-amber-50 border-amber-300 text-amber-950'
                       : 'bg-amber-950/40 border-amber-800 text-amber-200'
@@ -569,7 +692,7 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                           setTimeout(() => setConfirmBulkDelete(false), 4000);
                         }
                       }}
-                      className={`px-3 py-1.5 text-xs font-black uppercase tracking-tight border transition flex items-center gap-1.5 cursor-pointer ${
+                      className={`px-3 py-1.5 text-xs font-black uppercase tracking-tight border rounded transition flex items-center gap-1.5 cursor-pointer ${
                         confirmBulkDelete
                           ? 'bg-red-600 text-white border-red-600 animate-pulse'
                           : 'bg-red-600 hover:bg-red-700 text-white border-red-700'
@@ -588,12 +711,11 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
 
               {/* Table Container */}
               <div
-                className={`flex-1 overflow-auto border-2 ${
+                className={`flex-1 overflow-auto border-2 rounded-lg ${
                   isLightMode ? 'border-zinc-300' : 'border-[#1D3528]'
                 }`}
               >
                 <div className="min-w-[850px]">
-                  {/* Table Header */}
                   <div
                     className={`grid grid-cols-[40px_1.5fr_2fr_1fr_1.5fr_120px] gap-3 p-3 border-b-2 text-xs font-black uppercase tracking-widest items-center ${
                       isLightMode
@@ -626,7 +748,6 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                     <div className="text-right">Actions</div>
                   </div>
 
-                  {/* Table Body */}
                   <div className="flex flex-col">
                     {filteredTasks.length === 0 ? (
                       <div
@@ -652,7 +773,6 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                                 : 'border-[#1D3528]/50 hover:bg-[#111F17]'
                             }`}
                           >
-                            {/* Checkbox */}
                             <div className="flex items-center justify-center">
                               <button
                                 type="button"
@@ -667,10 +787,9 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                               </button>
                             </div>
 
-                            {/* Checklist Header */}
                             <div className="truncate">
                               <span
-                                className={`text-xs font-bold px-2 py-1 border rounded-sm truncate inline-block max-w-full ${
+                                className={`text-xs font-bold px-2 py-1 border rounded truncate inline-block max-w-full ${
                                   isLightMode
                                     ? 'bg-white border-zinc-300 text-zinc-700'
                                     : 'bg-black/50 border-[#1D3528] text-zinc-300'
@@ -680,7 +799,6 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                               </span>
                             </div>
 
-                            {/* Title & Status */}
                             <div className="flex items-center gap-2 min-w-0">
                               {task.completed ? (
                                 <CheckCircle2
@@ -707,26 +825,12 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                               >
                                 {task.title}
                               </span>
-                              {queue.some(
-                                (op) =>
-                                  ('taskId' in op && op.taskId === task.id) ||
-                                  (op.type === 'SAVE_TASK' && op.task.id === task.id)
-                              ) && (
-                                <span
-                                  className="text-[10px] font-mono font-black uppercase px-1.5 py-0.5 rounded-sm bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 flex-shrink-0"
-                                  title="Task update is stored in local queue and waiting to sync"
-                                >
-                                  Sync Pending
-                                </span>
-                              )}
                             </div>
 
-                            {/* Department */}
                             <div className="truncate text-xs font-bold">
                               {task.department || '-'}
                             </div>
 
-                            {/* Time Window */}
                             <div className="flex items-center gap-1.5 text-xs font-bold font-mono">
                               <Clock
                                 className={`w-3.5 h-3.5 ${
@@ -740,35 +844,17 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                               </span>
                             </div>
 
-                            {/* Actions */}
-                            <div className="flex items-center justify-end gap-1.5 sm:gap-2">
+                            <div className="flex items-center justify-end gap-1.5">
                               <button
                                 type="button"
                                 onClick={() => {
                                   onClose();
                                   onDuplicateTask(task);
                                 }}
-                                className={`p-1.5 border transition cursor-pointer flex items-center justify-center ${
-                                  isLightMode
-                                    ? 'bg-white hover:bg-zinc-200 border-zinc-300 text-zinc-700'
-                                    : 'bg-black hover:bg-[#1D3528] border-[#1D3528] text-zinc-300'
-                                }`}
+                                className="p-1.5 border rounded transition cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-800"
                                 title="Duplicate Task"
                               >
-                                <svg
-                                  xmlns="http://www.w3.org/2000/svg"
-                                  width="14"
-                                  height="14"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2.5"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                >
-                                  <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
-                                  <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
-                                </svg>
+                                <Copy className="w-3.5 h-3.5" />
                               </button>
 
                               <button
@@ -777,11 +863,7 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                                   onClose();
                                   onEditTask(task);
                                 }}
-                                className={`p-1.5 border transition cursor-pointer flex items-center justify-center ${
-                                  isLightMode
-                                    ? 'bg-white hover:bg-zinc-200 border-zinc-300 text-zinc-700'
-                                    : 'bg-black hover:bg-[#1D3528] border-[#1D3528] text-zinc-300'
-                                }`}
+                                className="p-1.5 border rounded transition cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-800"
                                 title="Edit Task"
                               >
                                 <Edit2 className="w-3.5 h-3.5" />
@@ -800,7 +882,7 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                                     setTimeout(() => setConfirmDeleteId(null), 3000);
                                   }
                                 }}
-                                className={`p-1.5 border transition cursor-pointer flex items-center justify-center ${
+                                className={`p-1.5 border rounded transition cursor-pointer ${
                                   isLightMode
                                     ? 'bg-red-50 hover:bg-red-100 border-red-200 text-red-600'
                                     : 'bg-red-950/30 hover:bg-red-900/60 border-red-900/50 text-red-400'
@@ -808,9 +890,7 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                                 title={confirmDeleteId === task.id ? 'Click again to confirm' : 'Delete Task'}
                               >
                                 {confirmDeleteId === task.id ? (
-                                  <span className="text-[10px] font-black uppercase whitespace-nowrap">
-                                    Confirm?
-                                  </span>
+                                  <span className="text-[10px] font-black uppercase">Confirm?</span>
                                 ) : (
                                   <Trash2 className="w-3.5 h-3.5" />
                                 )}
@@ -833,26 +913,28 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                 <div>
                   <h3 className="text-sm font-black uppercase tracking-wider flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-500" />
-                    <span>Manager Task Edit & Change Proposals</span>
+                    <span>Manager Task Edit Proposals</span>
                   </h3>
                   <p className="text-xs text-zinc-500 font-medium">
-                    Strict Policy: Direct template/task editing is restricted to Admin. Managers submit proposals below for approval.
+                    Strict Policy: Direct template editing is restricted to Admin. Managers submit proposals below for approval.
                   </p>
                 </div>
               </div>
 
               {editRequests.length === 0 ? (
-                <div className={`p-8 text-center text-xs font-bold uppercase border-2 border-dashed ${
-                  isLightMode ? 'bg-white border-zinc-300 text-zinc-500' : 'bg-zinc-900/40 border-[#1D3528] text-zinc-400'
-                }`}>
+                <div
+                  className={`p-8 text-center text-xs font-bold uppercase border-2 border-dashed rounded-lg ${
+                    isLightMode ? 'bg-white border-zinc-300 text-zinc-500' : 'bg-zinc-900/40 border-[#1D3528] text-zinc-400'
+                  }`}
+                >
                   No pending task edit requests.
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {editRequests.map((req) => (
+                  {editRequests.map((req, reqIdx) => (
                     <div
-                      key={req.id}
-                      className={`p-3.5 border-2 rounded-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                      key={`req-${req.id || 'no-id'}-${reqIdx}`}
+                      className={`p-3.5 border-2 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
                         req.status === 'pending'
                           ? isLightMode
                             ? 'bg-amber-50 border-amber-300 text-zinc-950'
@@ -868,18 +950,21 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                     >
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
-                          <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-xs ${
-                            req.status === 'pending' ? 'bg-amber-500 text-black' : req.status === 'approved' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'
-                          }`}>
+                          <span
+                            className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
+                              req.status === 'pending'
+                                ? 'bg-amber-500 text-black'
+                                : req.status === 'approved'
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-red-600 text-white'
+                            }`}
+                          >
                             {req.status.toUpperCase()}
                           </span>
                           <h4 className="text-xs font-black uppercase">{req.taskTitle}</h4>
                         </div>
                         <p className="text-[11px] font-medium opacity-80">
                           Requested by <span className="font-bold">{req.requestedBy}</span> on {new Date(req.requestedAt).toLocaleString()}
-                        </p>
-                        <p className="text-[10px] font-mono opacity-70">
-                          Proposed Title: "{req.proposedTask.title}" | Dept: {req.proposedTask.department} | Header: {req.proposedTask.checklistHeader}
                         </p>
                       </div>
 
@@ -888,14 +973,14 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                           <button
                             type="button"
                             onClick={() => onApproveEditRequest && onApproveEditRequest(req.id)}
-                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-tight flex items-center gap-1 cursor-pointer rounded-xs"
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-tight flex items-center gap-1 cursor-pointer rounded"
                           >
-                            <Check className="w-3.5 h-3.5" /> Approve Edit
+                            <Check className="w-3.5 h-3.5" /> Approve
                           </button>
                           <button
                             type="button"
                             onClick={() => onRejectEditRequest && onRejectEditRequest(req.id)}
-                            className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-black uppercase tracking-tight flex items-center gap-1 cursor-pointer rounded-xs"
+                            className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-black uppercase tracking-tight flex items-center gap-1 cursor-pointer rounded"
                           >
                             <X className="w-3.5 h-3.5" /> Reject
                           </button>
@@ -909,6 +994,20 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
           )}
         </motion.div>
       </motion.div>
+
+      {/* Batch Department Checklist Editor Modal */}
+      {activeBatchBundle && (
+        <DepartmentChecklistBatchEditorModal
+          isOpen={Boolean(activeBatchBundle)}
+          onClose={() => setActiveBatchBundle(null)}
+          bundle={activeBatchBundle}
+          initialTasks={
+            departmentBundledGroups.find((g) => g.bundle.key === activeBatchBundle.key)?.tasks || []
+          }
+          onSaveBatch={handleSaveBatchWrapper}
+          onResetToDefaultBundle={handleResetBundleWrapper}
+        />
+      )}
     </AnimatePresence>
   );
 };

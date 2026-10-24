@@ -82,6 +82,7 @@ import { PullToRefresh } from './components/PullToRefresh';
 import { ChecklistsSidebar, ParentChecklistInfo } from './components/ChecklistsSidebar';
 import { PREDEFINED_CHECKLIST_TEMPLATES, STATION_DEFAULT_HEADERS } from './data/checklistTemplates';
 import { SubmissionSuccessModal, SubmissionSuccessData } from './components/SubmissionSuccessModal';
+import { GoogleDriveModal } from './components/GoogleDriveModal';
 import firebaseConfigData from '../firebase-applet-config.json';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { usePWAUpdate } from './hooks/usePWAUpdate';
@@ -438,6 +439,7 @@ export default function App() {
 
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState<boolean>(false);
   const [isPdfModalOpen, setIsPdfModalOpen] = useState<boolean>(false);
+  const [isGoogleDriveModalOpen, setIsGoogleDriveModalOpen] = useState<boolean>(false);
   const [isDataCleanupModalOpen, setIsDataCleanupModalOpen] = useState<boolean>(false);
   const [isToolsModalOpen, setIsToolsModalOpen] = useState<boolean>(false);
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
@@ -1093,19 +1095,147 @@ export default function App() {
     });
   };
 
-  // Restore default checklists
-  const handleRestoreDefaultChecklists = () => {
+  // Batch Save Tasks (from Department Checklist Batch Editor Modal)
+  const handleSaveBatchTasks = async (updatedTasks: TaskItem[], deletedIds: string[]) => {
+    if ((!updatedTasks || updatedTasks.length === 0) && (!deletedIds || deletedIds.length === 0)) return;
+
+    try {
+      // 1. Handle deleted task IDs
+      if (deletedIds && deletedIds.length > 0) {
+        await batchDeleteTasksFromFirebase(deletedIds);
+        addDeletedTaskIds(deletedIds);
+        removeTasksFromLocalCache(deletedIds);
+      }
+
+      // 2. Handle updated/added tasks
+      if (updatedTasks && updatedTasks.length > 0) {
+        await batchSaveTasksToFirebase(updatedTasks);
+      }
+
+      // 3. Update React state
+      const deletedSet = new Set(deletedIds || []);
+      const updatedMap = new Map((updatedTasks || []).map((t) => [t.id, t]));
+
+      setTasks((prev) => {
+        const filtered = prev.filter((t) => !deletedSet.has(t.id) && !updatedMap.has(t.id));
+        const merged = [...filtered, ...(updatedTasks || [])];
+        try {
+          localStorage.setItem('amarii_tasks_cache', JSON.stringify(merged));
+        } catch (e) {}
+        return merged;
+      });
+
+      setToastFeedback({
+        id: `toast-batch-save-${Date.now()}`,
+        text: `✓ Batch saved ${updatedTasks.length} checklist item(s) to Firestore!`,
+        type: 'success',
+      });
+    } catch (err: any) {
+      console.error('Batch save tasks error:', err);
+      if (!isDeviceOnline()) {
+        const deletedSet = new Set(deletedIds || []);
+        const updatedMap = new Map((updatedTasks || []).map((t) => [t.id, t]));
+        if (deletedIds.length > 0) addDeletedTaskIds(deletedIds);
+        setTasks((prev) => {
+          const filtered = prev.filter((t) => !deletedSet.has(t.id) && !updatedMap.has(t.id));
+          return [...filtered, ...(updatedTasks || [])];
+        });
+        if (updatedTasks.length > 0) {
+          await executeTaskOperationWithQueue({
+            type: 'BATCH_SAVE_TASKS',
+            tasks: updatedTasks,
+          });
+        }
+        if (deletedIds.length > 0) {
+          await executeTaskOperationWithQueue({
+            type: 'BATCH_DELETE_TASKS',
+            taskIds: deletedIds,
+          });
+        }
+        setToastFeedback({
+          id: `toast-batch-save-queue-${Date.now()}`,
+          text: `Offline Mode: Changes saved locally & queued for Firestore auto-sync.`,
+          type: 'info',
+        });
+      } else {
+        setToastFeedback({
+          id: `toast-batch-save-err-${Date.now()}`,
+          text: `Failed to save changes: ${err?.message || 'Check database connection'}.`,
+          type: 'error',
+        });
+      }
+    }
+  };
+
+  // Reset a specific department bundle template to defaults
+  const handleResetToDefaultBundle = async (bundleKey: string) => {
+    const bundleKeyLower = (bundleKey || '').toLowerCase();
+    const defaultTasksForBundle = INITIAL_DAILY_TASKS.filter((t) => {
+      const d = (t.department || '').toLowerCase();
+      const h = (t.checklistHeader || '').toLowerCase();
+      if (bundleKeyLower === 'kitchen') return d.includes('kitchen') || h.includes('kitchen');
+      if (bundleKeyLower === 'bar') return d.includes('bar') || h.includes('bar');
+      if (bundleKeyLower === 'housekeeping') return d.includes('housekeeping') || d.includes('maintenance') || h.includes('housekeeping');
+      if (bundleKeyLower === 'service') return d.includes('service') || d.includes('front of house') || h.includes('service');
+      if (bundleKeyLower === 'billing') return d.includes('billing') || d.includes('cashier') || h.includes('cashier');
+      return false;
+    });
+
+    if (defaultTasksForBundle.length > 0) {
+      await batchSaveTasksToFirebase(defaultTasksForBundle);
+      const newMap = new Map(defaultTasksForBundle.map((t) => [t.id, t]));
+      setTasks((prev) => {
+        const filtered = prev.filter((t) => !newMap.has(t.id));
+        const merged = [...filtered, ...defaultTasksForBundle];
+        try {
+          localStorage.setItem('amarii_tasks_cache', JSON.stringify(merged));
+        } catch (e) {}
+        return merged;
+      });
+      setToastFeedback({
+        id: `toast-reset-bundle-${Date.now()}`,
+        text: `✓ Reset ${defaultTasksForBundle.length} tasks to default template!`,
+        type: 'success',
+      });
+    }
+  };
+
+  // Restore all 5 default department templates
+  const handleRestoreDefaultTemplates = async () => {
     setDeletedChecklistHeaders([]);
     try {
       localStorage.removeItem('amarii_deleted_checklist_headers');
+      localStorage.removeItem(STORAGE_KEY_DELETED_TASK_IDS);
     } catch (e) {
       console.warn(e);
     }
-    setToastFeedback({
-      id: `toast-rest-${Date.now()}`,
-      text: 'Default checklists restored successfully.',
-      type: 'info',
-    });
+
+    try {
+      await batchSaveTasksToFirebase(INITIAL_DAILY_TASKS);
+      const defaultMap = new Map(INITIAL_DAILY_TASKS.map((t) => [t.id, t]));
+      setTasks((prev) => {
+        const filtered = prev.filter((t) => !defaultMap.has(t.id));
+        const merged = [...filtered, ...INITIAL_DAILY_TASKS];
+        try {
+          localStorage.setItem('amarii_tasks_cache', JSON.stringify(merged));
+        } catch (e) {}
+        return merged;
+      });
+
+      setToastFeedback({
+        id: `toast-rest-${Date.now()}`,
+        text: `✓ Successfully restored all ${INITIAL_DAILY_TASKS.length} default department tasks into database!`,
+        type: 'success',
+      });
+    } catch (err: any) {
+      console.error('Restore default templates error:', err);
+      setTasks(INITIAL_DAILY_TASKS);
+      setToastFeedback({
+        id: `toast-rest-err-${Date.now()}`,
+        text: 'Loaded default templates into active view.',
+        type: 'info',
+      });
+    }
   };
 
   // Admin override mandatory requirements to force complete a task
@@ -3284,7 +3414,7 @@ export default function App() {
             </div>
           </div>
           <a
-            href={`https://console.firebase.google.com/project/${firebaseConfigData.projectId}/firestore/databases/${firebaseConfigData.firestoreDatabaseId || '(default)'}/data?openUpgradeDialog=true`}
+            href={`https://console.firebase.google.com/project/${firebaseConfigData.projectId}/firestore/databases/${(firebaseConfigData as any).firestoreDatabaseId || '(default)'}/data?openUpgradeDialog=true`}
             target="_blank"
             rel="noopener noreferrer"
             className="px-3 py-1.5 bg-black hover:bg-zinc-800 text-white text-[11px] font-black uppercase tracking-wider rounded shrink-0 text-center transition shadow cursor-pointer"
@@ -3949,7 +4079,7 @@ export default function App() {
                       {deletedChecklistHeaders.length > 0 && (
                         <button
                           type="button"
-                          onClick={handleRestoreDefaultChecklists}
+                          onClick={handleRestoreDefaultTemplates}
                           className={`px-2.5 py-1.5 text-xs font-bold uppercase tracking-tight border transition cursor-pointer min-h-[36px] flex items-center gap-1.5 ${
                             isLightMode
                               ? 'bg-white hover:bg-zinc-100 text-zinc-700 border-zinc-300'
@@ -4050,7 +4180,7 @@ export default function App() {
                             </button>
                             <button
                               type="button"
-                              onClick={handleRestoreDefaultChecklists}
+                              onClick={handleRestoreDefaultTemplates}
                               className={`px-4 py-2 text-xs font-black uppercase tracking-tight border cursor-pointer rounded-md ${
                                 isLightMode
                                   ? 'bg-zinc-100 hover:bg-zinc-200 text-black border-zinc-300'
@@ -4344,6 +4474,7 @@ export default function App() {
         onOpenTaskDirectory={() => setIsTaskDirectoryOpen(true)}
         onToggleAnalytics={() => setIsAnalyticsOpen(true)}
         onOpenPdfModal={() => setIsPdfModalOpen(true)}
+        onOpenGoogleDrive={() => setIsGoogleDriveModalOpen(true)}
         onOpenOutletModal={() => openOutletModal()}
         onOpenDataCleanup={() => setIsDataCleanupModalOpen(true)}
         onOpenPasteModal={() => setIsPasteModalOpen(true)}
@@ -4365,6 +4496,12 @@ export default function App() {
         onTriggerTestUrgentAlert={handleTriggerTestUrgentAlert}
         onUpdateApp={swUpdateApp}
         needRefresh={swNeedRefresh}
+      />
+
+      {/* Google Drive Storage & Cloud Backup Modal */}
+      <GoogleDriveModal
+        isOpen={isGoogleDriveModalOpen}
+        onClose={() => setIsGoogleDriveModalOpen(false)}
       />
 
       {/* Desktop-Style Incomplete Urgent Task Deadline Alert Banner */}
@@ -4469,6 +4606,9 @@ export default function App() {
         editRequests={editRequests}
         onApproveEditRequest={handleApproveEditRequest}
         onRejectEditRequest={handleRejectEditRequest}
+        onSaveBatchTasks={handleSaveBatchTasks}
+        onRestoreDefaultTemplates={handleRestoreDefaultTemplates}
+        onResetToDefaultBundle={handleResetToDefaultBundle}
       />
 
       {/* Task Creation / Edit / Assignment Modal */}

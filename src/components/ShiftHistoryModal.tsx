@@ -13,10 +13,12 @@ import {
   User,
   Clock,
   ClipboardList,
+  HardDrive,
 } from 'lucide-react';
 import { ShiftRecord } from '../types';
 import { generateChecklistAuditPdf } from '../utils/checklistPdfGenerator';
 import { shareChecklistUpdate } from '../utils/shareUtils';
+import { getDriveAccessToken, googleSignInForDrive, backupShiftToGoogleDrive } from '../lib/googleDrive';
 import { SubmissionDetailsModal } from './SubmissionDetailsModal';
 import { useTheme } from '../context/ThemeContext';
 
@@ -112,11 +114,55 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
         window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank');
         setNotice('Opened WhatsApp.');
       }
-      setTimeout(() => setNotice(null), 4000);
     } catch (err) {
       console.error('WhatsApp error:', err);
     } finally {
       setActiveShareId(null);
+    }
+  };
+
+  const [activeDriveId, setActiveDriveId] = useState<string | null>(null);
+
+  const handleBackupDrive = async (rec: ShiftRecord) => {
+    setActiveDriveId(rec.id);
+    setNotice(`Connecting to Google Drive...`);
+    try {
+      let activeToken = await getDriveAccessToken();
+      if (!activeToken) {
+        const res = await googleSignInForDrive();
+        activeToken = res?.accessToken || null;
+      }
+
+      if (!activeToken) {
+        setNotice('Google Drive sign-in required.');
+        setActiveDriveId(null);
+        return;
+      }
+
+      setNotice(`Generating PDF report & backing up to Google Drive...`);
+      const checklistTitle =
+        rec.label || rec.tasks?.[0]?.checklistHeader || `${rec.department || 'Shift'} Operations Checklist`;
+
+      const pdfResult = await generateChecklistAuditPdf({
+        checklistHeader: checklistTitle,
+        department: rec.department || 'Operations',
+        submittedBy: rec.staffName || 'Staff',
+        submittedAt: rec.timestamp,
+        outletName: rec.outlet || 'Amarii Café Kothrud',
+        tasks: rec.tasks || [],
+      });
+
+      const pdfBlob = pdfResult.output('blob');
+      const backupResult = await backupShiftToGoogleDrive(activeToken, rec, pdfBlob);
+
+      setNotice(`✓ Report saved to Google Drive ("${backupResult.fileName}")!`);
+      setTimeout(() => setNotice(null), 5000);
+    } catch (err: any) {
+      console.error('Google Drive backup error:', err);
+      setNotice(`Drive Error: ${err.message || 'Operation failed'}`);
+      setTimeout(() => setNotice(null), 5000);
+    } finally {
+      setActiveDriveId(null);
     }
   };
 
@@ -187,7 +233,7 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
                 No past submissions recorded yet. Whenever you submit an Amarii Café checklist, it is stored here for instant audit and report export.
               </div>
             ) : (
-              history.map((rec) => {
+              history.map((rec, recIdx) => {
                 const dateObj = new Date(rec.timestamp);
                 const dateStr = dateObj.toLocaleString([], {
                   month: 'short',
@@ -208,12 +254,13 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
                   taskList[0]?.checklistHeader ||
                   `${rec.department || 'Shift'} Operations Checklist`;
 
-                const isPdfLoading = activePdfId === rec.id;
-                const isShareLoading = activeShareId === rec.id;
+                        const isPdfLoading = activePdfId === rec.id;
+                        const isShareLoading = activeShareId === rec.id;
+                        const isDriveLoading = activeDriveId === rec.id;
 
                 return (
                   <div
-                    key={rec.id}
+                    key={`shift-history-${rec.id || 'no-id'}-${recIdx}`}
                     className="p-4 border border-zinc-800 bg-zinc-900/80 hover:bg-zinc-900 hover:border-zinc-500 transition flex flex-col md:flex-row md:items-center justify-between gap-3 rounded-md"
                   >
                     <div className="space-y-1.5 flex-1 min-w-0">
@@ -302,6 +349,23 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
                           <Share2 className="w-3.5 h-3.5 stroke-[2.5]" />
                         )}
                         <span className="hidden sm:inline">WhatsApp</span>
+                      </button>
+
+                      {/* Backup to Google Drive Button */}
+                      <button
+                        type="button"
+                        id={`history-backup-drive-btn-${rec.id}`}
+                        onClick={() => handleBackupDrive(rec)}
+                        disabled={isDriveLoading}
+                        className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold uppercase tracking-tight transition cursor-pointer min-h-[38px] rounded"
+                        title="Backup Report to Google Drive"
+                      >
+                        {isDriveLoading ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <HardDrive className="w-3.5 h-3.5 stroke-[2.5]" />
+                        )}
+                        <span className="hidden sm:inline">Drive</span>
                       </button>
 
                       {/* Delete Submission Log Button */}
