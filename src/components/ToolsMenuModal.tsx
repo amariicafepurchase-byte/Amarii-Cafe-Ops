@@ -140,7 +140,7 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
         {/* Menu Options */}
         <div className="p-3 space-y-1.5">
           {/* Master Task Register & Audit Records Modal Quick Access */}
-          {onOpenTaskRegister && (
+          {(isAdmin || isManager) && onOpenTaskRegister && (
             <button
               type="button"
               id="tools-task-register-btn"
@@ -172,7 +172,7 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
           )}
 
           {/* Extreme Loud 10-Min Pre-Task Alarm & Mobile Notification Test */}
-          {onTriggerTestAlarm && (
+          {(isAdmin || isManager) && onTriggerTestAlarm && (
             <button
               type="button"
               id="tools-test-alarm-btn"
@@ -204,7 +204,7 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
           )}
 
           {/* 30-Min Urgent Task Desktop Notification & Alert Test */}
-          {onTriggerTestUrgentAlert && (
+          {(isAdmin || isManager) && onTriggerTestUrgentAlert && (
             <button
               type="button"
               id="tools-test-urgent-deadline-alert-btn"
@@ -391,7 +391,7 @@ export const ToolsMenuModal: React.FC<ToolsMenuModalProps> = ({
           )}
 
           {/* Staff & Passcode Management */}
-          {onOpenStaffModal && (
+          {canAccessTools && onOpenStaffModal && (
             <button
               type="button"
               id="tools-menu-staff-btn"

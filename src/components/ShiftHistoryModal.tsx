@@ -26,6 +26,7 @@ interface ShiftHistoryModalProps {
   history: ShiftRecord[];
   onRestore?: (record: ShiftRecord) => void;
   onClearHistory: () => void;
+  onDeleteShift?: (shiftId: string) => void;
   onViewMedia?: (media: { id: string; type: 'photo' | 'video'; url: string; name: string }) => void;
 }
 
@@ -35,12 +36,15 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
   history,
   onRestore,
   onClearHistory,
+  onDeleteShift,
   onViewMedia,
 }) => {
   const { isLightMode } = useTheme();
   const [selectedRecord, setSelectedRecord] = useState<ShiftRecord | null>(null);
   const [activePdfId, setActivePdfId] = useState<string | null>(null);
   const [activeShareId, setActiveShareId] = useState<string | null>(null);
+  const [deletingShiftId, setDeletingShiftId] = useState<string | null>(null);
+  const [isConfirmingClearAll, setIsConfirmingClearAll] = useState<boolean>(false);
   const [notice, setNotice] = useState<string | null>(null);
 
   if (!isOpen) return null;
@@ -116,6 +120,15 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
     }
   };
 
+  const confirmDeleteShiftDoc = (shiftId: string) => {
+    if (onDeleteShift) {
+      onDeleteShift(shiftId);
+      setNotice('✓ Submission log deleted. Master department checklists remain 100% untouched.');
+      setTimeout(() => setNotice(null), 4000);
+    }
+    setDeletingShiftId(null);
+  };
+
   return (
     <>
       <div
@@ -146,7 +159,7 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
                   My Submissions & Shift History
                 </h2>
                 <p className="text-[10px] sm:text-xs text-zinc-400 font-bold uppercase tracking-wider">
-                  Past Amarii Café Submitted Checklists (Strict Read-Only)
+                  Past Amarii Café Submitted Log Records (Master Checklists Untouched)
                 </p>
               </div>
             </div>
@@ -162,7 +175,7 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
 
           {/* Notice Alert */}
           {notice && (
-            <div className="mx-4 mt-3 p-2 bg-emerald-950 border border-emerald-500 text-emerald-200 text-xs font-bold rounded text-center shrink-0">
+            <div className="mx-4 mt-3 p-2.5 bg-emerald-950 border border-emerald-500 text-emerald-200 text-xs font-bold rounded text-center shrink-0 animate-in fade-in">
               {notice}
             </div>
           )}
@@ -171,7 +184,7 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
           <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3 bg-zinc-950 modal-scroll-area">
             {history.length === 0 ? (
               <div className="py-12 px-4 text-center text-xs font-bold uppercase tracking-wider text-zinc-500 bg-zinc-900/50 border border-dashed border-zinc-800 rounded">
-                No past submissions recorded yet. Whenever you submit an Amarii Café checklist, it is permanently stored here for instant audit and report export.
+                No past submissions recorded yet. Whenever you submit an Amarii Café checklist, it is stored here for instant audit and report export.
               </div>
             ) : (
               history.map((rec) => {
@@ -212,7 +225,7 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
                           {pct}% DONE
                         </span>
                         <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded flex items-center gap-1">
-                          <Lock className="w-2.5 h-2.5" /> Read-Only
+                          <Lock className="w-2.5 h-2.5" /> Response Log
                         </span>
                       </div>
 
@@ -243,7 +256,7 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
                       </div>
                     </div>
 
-                    {/* Action Buttons: View Details, Download PDF, Share WhatsApp */}
+                    {/* Action Buttons: View Details, Download PDF, Share WhatsApp, Delete Log */}
                     <div className="flex items-center gap-1.5 sm:gap-2 self-start md:self-center shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-zinc-800 w-full md:w-auto">
                       {/* View Details Button */}
                       <button
@@ -290,6 +303,19 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
                         )}
                         <span className="hidden sm:inline">WhatsApp</span>
                       </button>
+
+                      {/* Delete Submission Log Button */}
+                      {onDeleteShift && (
+                        <button
+                          type="button"
+                          id={`history-delete-log-btn-${rec.id}`}
+                          onClick={() => setDeletingShiftId(rec.id)}
+                          className="p-2 bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800 text-xs font-bold transition cursor-pointer min-h-[38px] min-w-[38px] flex items-center justify-center rounded"
+                          title="Delete Submission Log (हटाएं जमा किया गया रिकॉर्ड)"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -305,16 +331,93 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
               </span>
               <button
                 type="button"
-                onClick={onClearHistory}
-                className="text-xs font-black uppercase text-red-500 hover:text-red-400 flex items-center gap-1 cursor-pointer py-1 min-h-[40px]"
+                onClick={() => setIsConfirmingClearAll(true)}
+                className="text-xs font-black uppercase text-red-400 hover:text-red-300 flex items-center gap-1 cursor-pointer py-1 min-h-[40px]"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                Clear History
+                <span>Delete Submission Log (हटाएं जमा किया गया रिकॉर्ड)</span>
               </button>
             </div>
           )}
         </div>
       </div>
+
+      {/* Delete Single Submission Log Safeguard Modal */}
+      {deletingShiftId && (
+        <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4">
+          <div className="w-full max-w-md p-6 bg-zinc-950 text-white border-4 border-red-600 shadow-2xl space-y-4 rounded-lg">
+            <div className="flex items-center gap-2.5 text-red-500">
+              <Trash2 className="w-6 h-6 stroke-[2.5]" />
+              <h3 className="text-base font-black uppercase">Delete Submission Log?</h3>
+            </div>
+            <p className="text-xs text-zinc-300 font-medium leading-relaxed">
+              Are you sure you want to <strong>Delete Submission Log (हटाएं जमा किया गया रिकॉर्ड)</strong>?
+              <br /><br />
+              <span className="text-emerald-400 font-bold">
+                ✓ SAFEGUARD GUARANTEE: This will ONLY delete this specific past submission entry from history.
+                Master station checklists will remain 100% safe & untouched for the next shift.
+              </span>
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeletingShiftId(null)}
+                className="px-3.5 py-2 text-xs font-bold uppercase bg-zinc-800 text-zinc-300 hover:bg-zinc-700 rounded transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => confirmDeleteShiftDoc(deletingShiftId)}
+                className="px-4 py-2 text-xs font-black uppercase bg-red-600 hover:bg-red-700 text-white rounded shadow transition cursor-pointer"
+              >
+                Delete Submission Log
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear All Submission Logs Confirmation Modal */}
+      {isConfirmingClearAll && (
+        <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4">
+          <div className="w-full max-w-md p-6 bg-zinc-950 text-white border-4 border-red-600 shadow-2xl space-y-4 rounded-lg">
+            <div className="flex items-center gap-2.5 text-red-500">
+              <Trash2 className="w-6 h-6 stroke-[2.5]" />
+              <h3 className="text-base font-black uppercase">Clear All Submission Logs?</h3>
+            </div>
+            <p className="text-xs text-zinc-300 font-medium leading-relaxed">
+              Are you sure you want to <strong>Delete Submission Logs (हटाएं जमा किए गए सभी रिकॉर्ड)</strong>?
+              <br /><br />
+              <span className="text-emerald-400 font-bold">
+                ✓ SAFEGUARD GUARANTEE: This only clears past submitted logs.
+                Master station checklists will remain 100% active and untouched for future shifts.
+              </span>
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsConfirmingClearAll(false)}
+                className="px-3.5 py-2 text-xs font-bold uppercase bg-zinc-800 text-zinc-300 hover:bg-zinc-700 rounded transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsConfirmingClearAll(false);
+                  onClearHistory();
+                  setNotice('✓ All submission logs cleared. Master department checklists remain 100% safe & active.');
+                  setTimeout(() => setNotice(null), 5000);
+                }}
+                className="px-4 py-2 text-xs font-black uppercase bg-red-600 hover:bg-red-700 text-white rounded shadow transition cursor-pointer"
+              >
+                Clear All Logs
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Read-Only Details Modal */}
       {selectedRecord && (
@@ -328,3 +431,4 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
     </>
   );
 };
+

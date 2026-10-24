@@ -35,6 +35,7 @@ import { StaffMember, TaskDepartment, RoleType, TaskItem, DEFAULT_OUTLET } from 
 import { DEPARTMENTS, DEPARTMENT_COLORS } from '../data/staffData';
 import { useOutlet } from '../context/OutletContext';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import {
   saveStaffToFirebase,
   deleteStaffFromFirebase,
@@ -158,7 +159,9 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
     });
   }, [staffList]);
 
-  if (!isOpen) return null;
+  const { canAccessTools } = useAuth();
+
+  if (!isOpen || !canAccessTools) return null;
 
   const safeTasks = Array.isArray(tasks) ? tasks : [];
 

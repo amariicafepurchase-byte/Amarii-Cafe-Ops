@@ -120,6 +120,7 @@ import {
   saveStaffToFirebase,
   deleteStaffFromFirebase,
   saveShiftToFirebase,
+  deleteShiftFromFirebase,
   seedInitialTasksIfEmpty,
   syncAllStaffAndUsersToFirestore,
   purgeLegacyDemoStaffFromFirestore,
@@ -290,7 +291,20 @@ export default function App() {
     }
     return INITIAL_STAFF;
   });
-  const [history, setHistory] = useState<ShiftRecord[]>([]);
+  const [history, setHistory] = useState<ShiftRecord[]>(() => {
+    try {
+      const cached = localStorage.getItem('amarii_shift_history_cache');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('History cache read note:', e);
+    }
+    return [];
+  });
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [editRequests, setEditRequests] = useState<TaskEditRequest[]>(() => {
     try {
@@ -704,11 +718,27 @@ export default function App() {
     // 2. Immediately subscribe to tasks in real time
     unsubscribeTasks = subscribeToTasks(
       (liveTasks, fromCache) => {
-        if (liveTasks) {
+        if (liveTasks && liveTasks.length > 0) {
           const normalized = normalizeTasks(liveTasks);
-          setTasks(normalized);
+          if (normalized.length > 0) {
+            setTasks(normalized);
+            setSyncedTasksCount(normalized.length);
+          } else {
+            const defaults = INITIAL_DAILY_TASKS.filter((t) => !getDeletedTaskIds().has(t.id));
+            if (defaults.length > 0) {
+              setTasks(defaults);
+              setSyncedTasksCount(defaults.length);
+              batchSaveTasksToFirebase(defaults).catch(() => {});
+            }
+          }
+        } else {
+          const defaults = INITIAL_DAILY_TASKS.filter((t) => !getDeletedTaskIds().has(t.id));
+          if (defaults.length > 0) {
+            setTasks(defaults);
+            setSyncedTasksCount(defaults.length);
+            batchSaveTasksToFirebase(defaults).catch(() => {});
+          }
         }
-        setSyncedTasksCount(liveTasks ? liveTasks.length : 0);
         setIsFirebaseConnected(true);
         setFirestoreConnectionState('connected');
         setIsLiveRealtime(!fromCache);
@@ -783,6 +813,28 @@ export default function App() {
       localStorage.setItem(STORAGE_KEY_STATION, station);
     } catch (e) {
       console.warn('Failed to save station:', e);
+    }
+  };
+
+  // Delete a submission log record from shift history ONLY (leaves Master Task Templates 100% untouched)
+  const handleDeleteShift = async (shiftId: string) => {
+    if (!shiftId) return;
+    try {
+      await deleteShiftFromFirebase(shiftId);
+      setHistory((prev) => prev.filter((s) => s.id !== shiftId));
+      setToastFeedback({
+        id: `toast-del-shift-${Date.now()}`,
+        text: '✓ Submission log deleted permanently. Master department checklists remain 100% untouched.',
+        type: 'success',
+      });
+    } catch (err: any) {
+      console.error('Failed to delete shift record:', err);
+      setHistory((prev) => prev.filter((s) => s.id !== shiftId));
+      setToastFeedback({
+        id: `toast-del-shift-err-${Date.now()}`,
+        text: 'Submission log removed from view.',
+        type: 'info',
+      });
     }
   };
 
@@ -2192,7 +2244,15 @@ export default function App() {
       outlet: activeOutlet,
     };
 
-    setHistory((prev) => [shiftRecord, ...prev]);
+    setHistory((prev) => {
+      const updated = [shiftRecord, ...prev];
+      try {
+        localStorage.setItem('amarii_shift_history_cache', JSON.stringify(updated));
+      } catch (e) {
+        console.warn('Failed to cache shift record:', e);
+      }
+      return updated;
+    });
 
     // 6. Trigger Post-Submission Success Dialog & WhatsApp / PDF Export Modal
     const yesCount = sourceTasks.filter((t) => t.completed).length;
@@ -4365,6 +4425,7 @@ export default function App() {
         onClose={() => setIsHistoryModalOpen(false)}
         history={history}
         onClearHistory={() => setHistory([])}
+        onDeleteShift={handleDeleteShift}
         onViewMedia={setSelectedMedia}
       />
 

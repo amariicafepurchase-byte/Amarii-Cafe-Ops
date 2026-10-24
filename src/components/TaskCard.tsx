@@ -1089,7 +1089,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
               )}
 
               {/* Edit Icon Button: Clear, prominent for Admin and Manager */}
-              {onEditTask && (
+              {canEditTask && onEditTask && (
                 <button
                   type="button"
                   id={`edit-task-${task.id}`}
