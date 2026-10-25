@@ -1,57 +1,6 @@
 import { StaffMember, TaskDepartment } from '../types';
 
-export const INITIAL_STAFF: StaffMember[] = [
-  // 1. General Management & Admin - Hemen Das (Owner & Sole Controller)
-  {
-    id: 'staff-admin-hemen',
-    name: 'Hemen Das',
-    email: 'admin@amarii.cafe',
-    phone: '+91 98765 43260',
-    outlet: 'Amarii Cafe Kothrud',
-    password: 'admin123',
-    pin: '9987',
-    isActive: true,
-    department: 'Management',
-    designation: 'General Manager & Owner',
-    roleType: 'manager',
-    avatarColor: 'bg-zinc-900 text-white',
-    active: true,
-  },
-
-  // 2. Kitchen Department Head Chef - Aditya
-  {
-    id: 'staff-chef-aditya',
-    name: 'Aditya',
-    email: 'aditya123@gmail.com',
-    phone: '99876543210',
-    outlet: 'Amarii Cafe Kothrud',
-    password: 'chef123',
-    pin: '1234',
-    isActive: true,
-    department: 'Kitchen',
-    designation: 'Head Chef',
-    roleType: 'employee',
-    avatarColor: 'bg-red-500 text-white',
-    active: true,
-  },
-
-  // 3. Manager - Abhinash Dcosta (from Firestore database staff collection)
-  {
-    id: 'staff-manager-abhinash',
-    name: 'Abhinash Dcosta',
-    email: 'abhinashdcosta@yahoo.com',
-    phone: '9123935207',
-    outlet: 'Amarii Cafe Kothrud',
-    password: '2255',
-    pin: '2255',
-    isActive: true,
-    department: 'Management',
-    designation: 'Manager',
-    roleType: 'manager',
-    avatarColor: 'bg-red-500 text-white',
-    active: true,
-  },
-];
+export const INITIAL_STAFF: StaffMember[] = [];
 
 export const DEPARTMENTS: TaskDepartment[] = [
   'Kitchen',

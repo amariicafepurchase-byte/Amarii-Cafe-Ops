@@ -8,6 +8,7 @@ import {
   updateTaskNoteInFirebase,
   updateTaskMediaInFirebase,
   updateTaskSubTasksInFirebase,
+  isFirestoreDisabled,
 } from './firebase';
 
 export type TaskOperationType =
@@ -488,20 +489,6 @@ export async function processTaskQueue(): Promise<{
 export async function executeTaskOperationWithQueue(
   payload: QueuedTaskOperationPayload
 ): Promise<{ synced: boolean; queued: boolean; error?: Error }> {
-  const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
-  const existingQueue = getStoredQueue();
-
-  // If offline OR if older items are already pending in queue, enqueue first to maintain strictly ordered execution!
-  if (!isOnline || existingQueue.length > 0) {
-    console.log(`[TaskQueue] Enqueueing ${payload.type} to maintain FIFO ordering (Queue size: ${existingQueue.length + 1}).`);
-    enqueueTaskOperation(payload);
-    if (isOnline) {
-      processTaskQueue().catch((e) => console.warn('[TaskQueue] Queue flush error:', e));
-    }
-    return { synced: false, queued: true };
-  }
-
-  // Device reports online and queue is empty: attempt direct write
   try {
     const tempOp: QueuedTaskOperation = {
       id: `temp-${Date.now()}`,
@@ -510,49 +497,26 @@ export async function executeTaskOperationWithQueue(
       ...payload,
     } as QueuedTaskOperation;
 
+    // Executes localStorage update immediately (0ms) + silent background Firestore sync
     await executeSingleOperation(tempOp);
     updateLastSyncTime();
-
-    // If there are older queued operations waiting, trigger queue processing in the background
-    const existingQueue = getStoredQueue();
-    if (existingQueue.length > 0) {
-      processTaskQueue().catch((e) => console.warn('[TaskQueue] Background sync error:', e));
-    }
-
     return { synced: true, queued: false };
   } catch (err: any) {
-    console.warn(`[TaskQueue] Direct Firestore update failed (${err?.message}). Storing in local queue...`, err);
-    enqueueTaskOperation(payload);
-
-    // Schedule an auto-retry shortly
-    setTimeout(() => {
-      if (typeof navigator !== 'undefined' && navigator.onLine) {
-        processTaskQueue().catch((e) => console.warn('[TaskQueue] Auto-retry error:', e));
-      }
-    }, 4000);
-
-    return { synced: false, queued: true, error: err };
+    if (!isFirestoreDisabled()) {
+      enqueueTaskOperation(payload);
+    }
+    return { synced: false, queued: !isFirestoreDisabled(), error: err };
   }
 }
 
-// Setup background auto-retry triggers on window load
+// Setup online listener only (no repetitive background polling loops that hang WebSockets)
 if (typeof window !== 'undefined') {
-  // Listen for online event to automatically flush queue
   window.addEventListener('online', () => {
-    console.log('[TaskQueue] Connection re-established. Automatically retrying pending queue...');
-    setTimeout(() => {
-      processTaskQueue().catch((e) => console.warn('[TaskQueue] Auto-retry on online error:', e));
-    }, 1000);
-  });
-
-  // Background interval: periodic retry every 20 seconds if queue has items and device is online
-  setInterval(() => {
-    if (navigator.onLine) {
-      const q = getStoredQueue();
-      if (q.length > 0 && !isCurrentlySyncing) {
-        console.log(`[TaskQueue] Periodic auto-retry check: ${q.length} item(s) pending sync...`);
-        processTaskQueue().catch((e) => console.warn('[TaskQueue] Periodic retry error:', e));
-      }
+    if (!isFirestoreDisabled()) {
+      setTimeout(() => {
+        processTaskQueue().catch(() => {});
+      }, 1000);
     }
-  }, 20000);
+  });
 }
+

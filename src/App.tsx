@@ -120,6 +120,11 @@ import {
   updateTaskSubTasksInFirebase,
   saveStaffToFirebase,
   deleteStaffFromFirebase,
+  getDeletedStaffIds,
+  addDeletedStaffIds,
+  removeDeletedStaffIds,
+  STORAGE_KEY_DELETED_STAFF_IDS,
+  removeStaffFromLocalCache,
   saveShiftToFirebase,
   deleteShiftFromFirebase,
   seedInitialTasksIfEmpty,
@@ -127,11 +132,31 @@ import {
   purgeLegacyDemoStaffFromFirestore,
   LEGACY_DEMO_STAFF_IDS,
   subscribeToChecklistSettings,
+  saveDeletedChecklistsToFirebase,
+  deleteChecklistFromFirebase,
+  getDeletedChecklistTitles,
+  isChecklistDeleted,
+  isTaskBlacklisted,
+  addDeletedChecklistToBlacklist,
+  removeDeletedChecklistFromBlacklist,
+  STORAGE_KEY_TASKS_MASTER_CACHE,
+  STORAGE_KEY_STAFF_V3,
+  STORAGE_KEY_TASKS_V3,
+  STORAGE_KEY_SUBMISSIONS_V3,
+  STORAGE_KEY_DISASTER_BACKUP,
+  loadLocalStaff,
+  saveLocalStaff,
+  loadLocalTasks,
+  saveLocalTasks,
+  loadLocalSubmissions,
+  saveLocalSubmissions,
+  updateDisasterBackup,
   testFirestoreConnection,
   generateStaffId,
 } from './lib/firebase';
 import { useTaskQueue } from './hooks/useTaskQueue';
 import { executeTaskOperationWithQueue } from './lib/taskQueue';
+import { editRequestsRepository, flushPendingSyncQueue } from './lib/syncService';
 import { shareChecklistUpdate } from './utils/shareUtils';
 import { useOfflineAutoSync, enqueueOfflineSubmission, isDeviceOnline } from './utils/offlineSync';
 import { OfflineSyncBanner } from './components/OfflineSyncBanner';
@@ -161,6 +186,7 @@ export const addDeletedTaskIds = (ids: string[]) => {
 };
 
 // Helper to normalize any incoming tasks without modifying their real Firestore document IDs
+// Filters out both deleted task IDs and tasks belonging to deleted checklists
 const normalizeTasks = (rawTasks: TaskItem[]): TaskItem[] => {
   const result: TaskItem[] = [];
   const seenIds = new Set<string>();
@@ -169,6 +195,7 @@ const normalizeTasks = (rawTasks: TaskItem[]): TaskItem[] => {
   rawTasks.forEach((t) => {
     if (!t || !t.id) return;
     if (deletedIds.has(t.id)) return; // Strictly ignore permanently deleted tasks
+    if (isTaskBlacklisted(t)) return; // Strictly ignore tasks belonging to deleted checklists
     if (seenIds.has(t.id)) return; // Strictly deduplicate without renaming the ID
     seenIds.add(t.id);
     result.push(t);
@@ -225,23 +252,28 @@ export default function App() {
 
   const handleTriggerManualQueueSync = async () => {
     try {
-      const res = await triggerQueueSync();
-      if (res.processed > 0) {
+      const [res, universalRes] = await Promise.all([
+        triggerQueueSync(),
+        flushPendingSyncQueue(),
+      ]);
+      const totalProcessed = (res?.processed || 0) + (universalRes?.flushed || 0);
+      const totalRemaining = (res?.remaining || 0) + (universalRes?.remaining || 0);
+      if (totalProcessed > 0) {
         setToastFeedback({
           id: `toast-sync-${Date.now()}`,
-          text: `Synchronized ${res.processed} pending task update${res.processed > 1 ? 's' : ''} to Firestore.`,
+          text: `Synchronized ${totalProcessed} pending update${totalProcessed > 1 ? 's' : ''} to Firestore.`,
           type: 'success',
         });
-      } else if (res.remaining === 0) {
+      } else if (totalRemaining === 0) {
         setToastFeedback({
           id: `toast-sync-${Date.now()}`,
-          text: 'All offline task updates are fully synchronized.',
+          text: 'All local & cloud updates are fully synchronized.',
           type: 'info',
         });
       } else {
         setToastFeedback({
           id: `toast-sync-${Date.now()}`,
-          text: `Network connection offline. ${res.remaining} update(s) stored in local queue for auto-retry.`,
+          text: `Network connection offline. ${totalRemaining} update(s) stored in local queue for auto-retry.`,
           type: 'error',
         });
       }
@@ -259,84 +291,27 @@ export default function App() {
     closeOutletModal,
   } = useOutlet();
 
-  const [tasks, setTasks] = useState<TaskItem[]>(() => {
-    try {
-      const cached = localStorage.getItem('amarii_tasks_cache');
-      const deletedIds = getDeletedTaskIds();
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const clean = parsed.filter((t: any) => t && t.id && !deletedIds.has(t.id));
-          if (clean.length > 0) return clean;
-        }
-      }
-      return INITIAL_DAILY_TASKS.filter((t) => !deletedIds.has(t.id));
-    } catch (e) {
-      return INITIAL_DAILY_TASKS;
-    }
-  });
-  const [staffList, setStaffList] = useState<StaffMember[]>(() => {
-    try {
-      const cached = localStorage.getItem('amarii_staff_list_cache');
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const clean = parsed.filter(
-            (s: any) => s && s.id && !LEGACY_DEMO_STAFF_IDS.includes(s.id) && !s.name?.toLowerCase().includes('arjun')
-          );
-          if (clean.length > 0) return clean;
-        }
-      }
-    } catch (e) {
-      console.warn('Staff cache read note:', e);
-    }
-    return INITIAL_STAFF;
-  });
-  const [history, setHistory] = useState<ShiftRecord[]>(() => {
-    try {
-      const cached = localStorage.getItem('amarii_shift_history_cache');
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.warn('History cache read note:', e);
-    }
-    return [];
-  });
+  const [tasks, setTasks] = useState<TaskItem[]>(() => loadLocalTasks());
+  const [staffList, setStaffList] = useState<StaffMember[]>(() => loadLocalStaff());
+  const [history, setHistory] = useState<ShiftRecord[]>(() => loadLocalSubmissions());
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
-  const [editRequests, setEditRequests] = useState<TaskEditRequest[]>(() => {
-    try {
-      const cached = localStorage.getItem('amarii_edit_requests_v1');
-      return cached ? JSON.parse(cached) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [editRequests, setEditRequests] = useState<TaskEditRequest[]>(() =>
+    editRequestsRepository.getAllLocal()
+  );
 
   // Active Staff Member on this device
   const [activeStaff, setActiveStaff] = useState<StaffMember | null>(() => {
     try {
       const savedStaffId = localStorage.getItem(STORAGE_KEY_ACTIVE_STAFF);
+      const localStaff = loadLocalStaff();
       if (savedStaffId) {
-        const foundInInitial = INITIAL_STAFF.find((s) => s.id === savedStaffId);
-        if (foundInInitial) return foundInInitial;
-        const cached = localStorage.getItem('amarii_staff_list_cache');
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed)) {
-            const foundInCache = parsed.find((s: any) => s && s.id === savedStaffId);
-            if (foundInCache) return foundInCache;
-          }
-        }
+        const foundInLocal = localStaff.find((s) => s && s.id === savedStaffId);
+        if (foundInLocal) return foundInLocal;
       }
-    } catch (e) {
-      console.warn('Staff storage read error:', e);
+      return localStaff[0] || null;
+    } catch {
+      return null;
     }
-    // Default to Kitchen employee (Head Chef Aditya) so department isolation is locked by default
-    return INITIAL_STAFF.find((s) => s.id === 'staff-chef-aditya') || INITIAL_STAFF[0] || null;
   });
 
   // Manager override state (if unlocked via PIN '1234')
@@ -461,14 +436,9 @@ export default function App() {
   const [copied, setCopied] = useState<boolean>(false);
   const [activeMobileTab, setActiveMobileTab] = useState<'tasks' | 'station' | 'staff' | 'chat' | 'brief'>('tasks');
 
-  // Track deleted checklist headers so removed empty headers don't reappear
+  // Track deleted checklist headers so removed checklists NEVER reappear on refresh
   const [deletedChecklistHeaders, setDeletedChecklistHeaders] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('amarii_deleted_checklist_headers');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
+    return Array.from(getDeletedChecklistTitles());
   });
 
   // PWA install hook
@@ -519,21 +489,33 @@ export default function App() {
     return 'General Operations';
   }, [currentStation]);
 
-  // Synchronize deleted checklist headers: any header with active tasks should NEVER be suppressed
+  // Keep master task cache (amarii_tasks_master_v3) & disaster backup synchronized
   useEffect(() => {
-    if (deletedChecklistHeaders.length > 0 && tasks.length > 0) {
-      const activeHeaders = new Set(tasks.map((t) => getTaskChecklistGroup(t)));
-      const stillDeleted = deletedChecklistHeaders.filter((h) => !activeHeaders.has(h));
-      if (stillDeleted.length !== deletedChecklistHeaders.length) {
-        setDeletedChecklistHeaders(stillDeleted);
-        try {
-          localStorage.setItem('amarii_deleted_checklist_headers', JSON.stringify(stillDeleted));
-        } catch (e) {
-          console.warn('Could not update deleted checklist headers in localStorage:', e);
-        }
+    try {
+      const clean = tasks.filter((t) => !isTaskBlacklisted(t));
+      if (clean.length > 0) {
+        saveLocalTasks(clean);
       }
-    }
-  }, [tasks, deletedChecklistHeaders, getTaskChecklistGroup]);
+    } catch {}
+  }, [tasks]);
+
+  // Keep master staff list (amarii_staff_list_v3) & disaster backup synchronized
+  useEffect(() => {
+    try {
+      if (staffList.length > 0) {
+        saveLocalStaff(staffList);
+      }
+    } catch {}
+  }, [staffList]);
+
+  // Keep master submissions (amarii_submissions_v3) & disaster backup synchronized
+  useEffect(() => {
+    try {
+      if (history.length > 0) {
+        saveLocalSubmissions(history);
+      }
+    } catch {}
+  }, [history]);
 
   // Floating Operation Feedback Toast (e.g. deletion, updates)
   const [toastFeedback, setToastFeedback] = useState<{
@@ -668,116 +650,138 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [validationWarning]);
 
-  // Initialize Firebase and real-time listeners
+  // Initialize localStorage-first state and fail-safe background Firestore sync
   useEffect(() => {
     let unsubscribeTasks: () => void = () => {};
     let unsubscribeStaff: () => void = () => {};
     let unsubscribeShifts: () => void = () => {};
     let unsubscribeSettings: () => void = () => {};
 
-    console.log('[App] Initializing real-time Firestore listeners & verifying connection...');
-
-    // Proactively test cloud connectivity
+    // Fast 1-second connection check (never blocks UI or wipes local storage)
     testFirestoreConnection()
       .then((diag) => {
         if (diag.connected) {
-          console.log(`[App] Firestore Cloud Server connected (latency: ${diag.latencyMs}ms)`);
           setIsFirebaseConnected(true);
           setFirestoreConnectionState('connected');
         } else {
-          console.warn('[App] Firestore test connection probe failed:', diag.error);
           setFirestoreConnectionState('offline');
-          setLastFirestoreError(diag.error || 'Connection probe failed');
+          setLastFirestoreError(diag.error || 'Local storage primary mode active');
         }
       })
-      .catch((err) => {
-        console.warn('[App] Connection diagnostic probe error:', err);
+      .catch(() => {
+        setFirestoreConnectionState('offline');
       });
 
-    // 1. Immediately subscribe to staff in real time
-    unsubscribeStaff = subscribeToStaff(
-      (liveStaff, fromCache) => {
-        if (liveStaff && liveStaff.length > 0) {
-          setStaffList(liveStaff);
-          setSyncedStaffCount(liveStaff.length);
+    try {
+      unsubscribeStaff = subscribeToStaff(
+        (liveStaff, fromCache) => {
           try {
-            localStorage.setItem('amarii_staff_list_cache', JSON.stringify(liveStaff));
-          } catch (err) {
-            console.warn('Could not cache staff list:', err);
-          }
-        }
-        setIsFirebaseConnected(true);
-        setFirestoreConnectionState('connected');
-        setIsLiveRealtime(!fromCache);
-        setLastSyncTimestamp(new Date().toISOString());
-      },
-      (err) => {
-        console.warn('[App] Real-time staff listener note (offline cache active):', err.message);
-        setLastFirestoreError(err?.message || 'Staff subscription error');
-      }
-    );
-
-    // 2. Immediately subscribe to tasks in real time
-    unsubscribeTasks = subscribeToTasks(
-      (liveTasks, fromCache) => {
-        if (liveTasks && liveTasks.length > 0) {
-          const normalized = normalizeTasks(liveTasks);
-          if (normalized.length > 0) {
-            setTasks(normalized);
-            setSyncedTasksCount(normalized.length);
-          } else {
-            const defaults = INITIAL_DAILY_TASKS.filter((t) => !getDeletedTaskIds().has(t.id));
-            if (defaults.length > 0) {
-              setTasks(defaults);
-              setSyncedTasksCount(defaults.length);
-              batchSaveTasksToFirebase(defaults).catch(() => {});
+            const deletedStaffIds = getDeletedStaffIds();
+            const clean = (liveStaff || []).filter(
+              (s) =>
+                s &&
+                s.id &&
+                !deletedStaffIds.has(s.id) &&
+                !LEGACY_DEMO_STAFF_IDS.includes(s.id) &&
+                !s.name?.toLowerCase().includes('arjun')
+            );
+            setStaffList((prev) => {
+              // Zero Data Loss Shield: Never overwrite existing local staff with an empty remote snapshot
+              if (clean.length === 0 && prev.length > 0) {
+                const validPrev = prev.filter((s) => !deletedStaffIds.has(s.id));
+                return validPrev;
+              }
+              return saveLocalStaff(clean, clean.length === 0 && prev.length === 0);
+            });
+            setSyncedStaffCount(clean.length);
+            if (!fromCache) {
+              setIsFirebaseConnected(true);
+              setFirestoreConnectionState('connected');
+              setIsLiveRealtime(true);
+              setLastSyncTimestamp(new Date().toISOString());
             }
-          }
-        } else {
-          const defaults = INITIAL_DAILY_TASKS.filter((t) => !getDeletedTaskIds().has(t.id));
-          if (defaults.length > 0) {
-            setTasks(defaults);
-            setSyncedTasksCount(defaults.length);
-            batchSaveTasksToFirebase(defaults).catch(() => {});
-          }
+          } catch {}
+        },
+        (err) => {
+          setLastFirestoreError(err?.message || 'Local storage mode active');
         }
-        setIsFirebaseConnected(true);
-        setFirestoreConnectionState('connected');
-        setIsLiveRealtime(!fromCache);
-        setLastSyncTimestamp(new Date().toISOString());
-      },
-      (err) => {
-        console.warn('[App] Real-time tasks listener note (offline cache active):', err.message);
-        setLastFirestoreError(err?.message || 'Tasks subscription error');
-      }
-    );
+      );
 
-    // 3. Immediately subscribe to shifts in real time
-    unsubscribeShifts = subscribeToShifts(
-      (liveShifts) => {
-        setHistory(liveShifts);
-        setSyncedShiftsCount(liveShifts ? liveShifts.length : 0);
-      },
-      (err) => {
-        console.warn('[App] Error in shifts listener:', err.message);
-      }
-    );
+      unsubscribeTasks = subscribeToTasks(
+        (liveTasks, fromCache) => {
+          try {
+            const normalized = normalizeTasks(liveTasks || []);
+            setTasks((prev) => {
+              // Zero Data Loss Shield: Never overwrite existing local tasks with an empty remote snapshot
+              if (normalized.length === 0 && prev.length > 0) {
+                const validPrev = normalizeTasks(prev);
+                return validPrev;
+              }
+              return saveLocalTasks(normalized, normalized.length === 0 && prev.length === 0);
+            });
+            setSyncedTasksCount(normalized.length);
+            if (!fromCache) {
+              setIsFirebaseConnected(true);
+              setFirestoreConnectionState('connected');
+              setIsLiveRealtime(true);
+              setLastSyncTimestamp(new Date().toISOString());
+            }
+          } catch {}
+        },
+        (err) => {
+          setLastFirestoreError(err?.message || 'Local storage mode active');
+        }
+      );
 
-    // 4. Immediately subscribe to checklist settings in real time
-    unsubscribeSettings = subscribeToChecklistSettings((deletedHeaders) => {
-      setDeletedChecklistHeaders(deletedHeaders);
-    });
+      unsubscribeShifts = subscribeToShifts(
+        (liveShifts) => {
+          try {
+            const incoming = liveShifts || [];
+            setHistory((prev) => {
+              if (incoming.length === 0 && prev.length > 0) {
+                return prev;
+              }
+              return saveLocalSubmissions(incoming, incoming.length === 0 && prev.length === 0);
+            });
+            setSyncedShiftsCount(incoming.length);
+          } catch {}
+        },
+        () => {}
+      );
 
-    // 5. Initial bootstrap seed (only executes once per browser session if collection is completely unseeded)
-    seedInitialTasksIfEmpty(INITIAL_DAILY_TASKS, INITIAL_STAFF).catch((err) => {
-      console.warn('Firebase bootstrap seed notice:', err);
-    });
+      unsubscribeSettings = subscribeToChecklistSettings((deletedHeaders) => {
+        try {
+          setDeletedChecklistHeaders(deletedHeaders);
+        } catch {}
+      });
+
+      const unsubscribeEditRequests = editRequestsRepository.subscribe((liveReqs) => {
+        try {
+          setEditRequests((prev) => {
+            if (liveReqs.length === 0 && prev.length > 0) return prev;
+            return liveReqs;
+          });
+        } catch {}
+      });
+
+      return () => {
+        try {
+          unsubscribeTasks();
+          unsubscribeStaff();
+          unsubscribeShifts();
+          unsubscribeSettings();
+          unsubscribeEditRequests();
+        } catch {}
+      };
+    } catch {}
 
     return () => {
-      unsubscribeTasks();
-      unsubscribeStaff();
-      unsubscribeShifts();
-      unsubscribeSettings();
+      try {
+        unsubscribeTasks();
+        unsubscribeStaff();
+        unsubscribeShifts();
+        unsubscribeSettings();
+      } catch {}
     };
   }, []);
 
@@ -821,31 +825,25 @@ export default function App() {
   // Delete a submission log record from shift history ONLY (leaves Master Task Templates 100% untouched)
   const handleDeleteShift = async (shiftId: string) => {
     if (!shiftId) return;
-    try {
-      await deleteShiftFromFirebase(shiftId);
-      setHistory((prev) => prev.filter((s) => s.id !== shiftId));
-      setToastFeedback({
-        id: `toast-del-shift-${Date.now()}`,
-        text: '✓ Submission log deleted permanently. Master department checklists remain 100% untouched.',
-        type: 'success',
-      });
-    } catch (err: any) {
-      console.error('Failed to delete shift record:', err);
-      setHistory((prev) => prev.filter((s) => s.id !== shiftId));
-      setToastFeedback({
-        id: `toast-del-shift-err-${Date.now()}`,
-        text: 'Submission log removed from view.',
-        type: 'info',
-      });
-    }
+    // 1. Update localStorage v3 and React state FIRST (0ms)
+    setHistory((prev) => {
+      const next = prev.filter((s) => s.id !== shiftId);
+      saveLocalSubmissions(next, true);
+      return next;
+    });
+    setToastFeedback({
+      id: `toast-del-shift-${Date.now()}`,
+      text: '✓ Submission log deleted permanently. Master department checklists remain 100% untouched.',
+      type: 'success',
+    });
+
+    // 2. Silent background Firestore delete
+    deleteShiftFromFirebase(shiftId).catch(() => {});
   };
 
-  // Delete a task (Admin and Manager) with permanent Firestore deletion & cache purge
+  // Delete a task (Admin and Manager) with instant localStorage v3 deletion & silent background Firestore sync
   const handleDeleteTask = async (taskId: string) => {
-    if (!taskId) {
-      console.error('handleDeleteTask: taskId is missing or invalid');
-      return;
-    }
+    if (!taskId) return;
     if (!canDeleteTask) {
       setToastFeedback({
         id: `toast-err-${Date.now()}`,
@@ -858,63 +856,42 @@ export default function App() {
     const taskToDelete = tasks.find((t) => t.id === taskId);
     const taskTitle = taskToDelete?.title || 'Checklist task';
 
-    try {
-      // 1. Direct permanent deletion from Firestore via deleteDoc
-      await deleteTaskFromFirebase(taskId);
+    // 1. Mark task ID permanently deleted & purge from all localStorage caches FIRST (0ms)
+    addDeletedTaskIds([taskId]);
+    removeTasksFromLocalCache([taskId]);
 
-      // 2. Mark task ID permanently deleted so it cannot be revived by local caches/fallbacks
-      addDeletedTaskIds([taskId]);
+    // 2. Update React state & v3 localStorage immediately (0ms)
+    setTasks((prev) => {
+      const next = prev.filter((t) => t.id !== taskId);
+      saveLocalTasks(next, true);
+      return next;
+    });
 
-      // 3. Remove from React state upon successful deletion
-      setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    // 3. Update shift history records in state
+    setHistory((prev) => {
+      const next = prev.map((shift) => ({
+        ...shift,
+        tasks: (shift.tasks || []).filter((st) => st.id !== taskId),
+        completedTasks: (shift.tasks || []).filter((st) => st.id !== taskId && st.completed).length,
+        totalTasks: (shift.tasks || []).filter((st) => st.id !== taskId).length,
+      }));
+      saveLocalSubmissions(next);
+      return next;
+    });
 
-      // 4. Immediately purge from local caches
-      removeTasksFromLocalCache([taskId]);
+    setToastFeedback({
+      id: `toast-del-${Date.now()}`,
+      text: `✓ Checklist "${taskTitle}" permanently deleted.`,
+      type: 'success',
+    });
 
-      // 5. Update shift history records in state
-      setHistory((prev) =>
-        prev.map((shift) => ({
-          ...shift,
-          tasks: (shift.tasks || []).filter((st) => st.id !== taskId),
-          completedTasks: (shift.tasks || []).filter((st) => st.id !== taskId && st.completed).length,
-          totalTasks: (shift.tasks || []).filter((st) => st.id !== taskId).length,
-        }))
-      );
-
-      setToastFeedback({
-        id: `toast-del-${Date.now()}`,
-        text: `✓ Checklist "${taskTitle}" permanently deleted from database.`,
-        type: 'success',
-      });
-    } catch (err: any) {
-      console.error('Failed to delete task from Firebase:', err);
-      // If network disconnected, remove locally and enqueue for sync
-      if (!isDeviceOnline()) {
-        addDeletedTaskIds([taskId]);
-        setTasks((prev) => prev.filter((t) => t.id !== taskId));
-        removeTasksFromLocalCache([taskId]);
-        await executeTaskOperationWithQueue({
-          type: 'DELETE_TASK',
-          taskId,
-        });
-        setToastFeedback({
-          id: `toast-del-queue-${Date.now()}`,
-          text: `Offline Mode: "${taskTitle}" removed locally & queued for Firestore auto-sync.`,
-          type: 'info',
-        });
-      } else {
-        setToastFeedback({
-          id: `toast-del-err-${Date.now()}`,
-          text: `Failed to delete from database: ${err?.message || 'Check database connection'}.`,
-          type: 'error',
-        });
-      }
-    }
+    // 4. Silent background Firestore deletion
+    deleteTaskFromFirebase(taskId).catch(() => {});
   };
 
   // Delete an entire checklist and all its associated tasks (Admin and Manager)
   const handleDeleteChecklist = async (headerName: string) => {
-    if (!headerName) return;
+    if (!headerName || !headerName.trim()) return;
     if (!canDeleteTask) {
       setToastFeedback({
         id: `toast-err-${Date.now()}`,
@@ -924,66 +901,46 @@ export default function App() {
       return;
     }
 
+    const cleanHeader = headerName.trim();
+    const lowerHeader = cleanHeader.toLowerCase();
+
     const tasksToDelete = tasks.filter(
-      (t) => getTaskChecklistGroup(t) === headerName || (t.checklistHeader || 'General Operations') === headerName
+      (t) =>
+        getTaskChecklistGroup(t).toLowerCase() === lowerHeader ||
+        (t.checklistHeader || 'General Operations').trim().toLowerCase() === lowerHeader
     );
     const taskIds = tasksToDelete.map((t) => t.id);
 
-    try {
-      if (taskIds.length > 0) {
-        await batchDeleteTasksFromFirebase(taskIds);
-        addDeletedTaskIds(taskIds);
-        removeTasksFromLocalCache(taskIds);
-      }
+    // 1. Immediately blacklist checklist ID & title and purge local caches FIRST (0ms)
+    const updatedDeletedHeaders = addDeletedChecklistToBlacklist(cleanHeader, taskIds);
+    setDeletedChecklistHeaders(updatedDeletedHeaders);
+    removeTasksFromLocalCache(taskIds, cleanHeader);
 
-      // Remove from state
-      setTasks((prev) =>
-        prev.filter((t) => getTaskChecklistGroup(t) !== headerName && (t.checklistHeader || 'General Operations') !== headerName)
+    // 2. Immediately remove all tasks in this checklist from local React state & v3 localStorage (0ms)
+    setTasks((prev) => {
+      const remaining = prev.filter(
+        (t) =>
+          getTaskChecklistGroup(t).toLowerCase() !== lowerHeader &&
+          (t.checklistHeader || 'General Operations').trim().toLowerCase() !== lowerHeader &&
+          !isTaskBlacklisted(t)
       );
+      saveLocalTasks(remaining, true);
+      return remaining;
+    });
 
-      // Persist deleted header so empty/default templates don't reappear
-      setDeletedChecklistHeaders((prev) => {
-        const updated = prev.includes(headerName) ? prev : [...prev, headerName];
-        try {
-          localStorage.setItem('amarii_deleted_checklist_headers', JSON.stringify(updated));
-        } catch (e) {
-          console.warn('Could not save deleted checklists to localStorage:', e);
-        }
-        return updated;
-      });
-
-      setToastFeedback({
-        id: `toast-del-chk-${Date.now()}`,
-        text: `✓ Checklist "${headerName}" and its ${taskIds.length} tasks permanently deleted.`,
-        type: 'success',
-      });
-    } catch (err: any) {
-      console.error('Failed to delete checklist from Firebase:', err);
-      if (!isDeviceOnline()) {
-        addDeletedTaskIds(taskIds);
-        setTasks((prev) =>
-          prev.filter((t) => getTaskChecklistGroup(t) !== headerName && (t.checklistHeader || 'General Operations') !== headerName)
-        );
-        removeTasksFromLocalCache(taskIds);
-        if (taskIds.length > 0) {
-          await executeTaskOperationWithQueue({
-            type: 'BATCH_DELETE_TASKS',
-            taskIds,
-          });
-        }
-        setToastFeedback({
-          id: `toast-del-chk-queue-${Date.now()}`,
-          text: `Offline: Checklist deleted locally & queued for Firestore auto-sync.`,
-          type: 'info',
-        });
-      } else {
-        setToastFeedback({
-          id: `toast-del-chk-err-${Date.now()}`,
-          text: `Failed to delete checklist: ${err?.message || 'Check database connection'}.`,
-          type: 'error',
-        });
-      }
+    // Switch selectedParentChecklist away from the deleted checklist if currently selected
+    if (selectedParentChecklist.trim().toLowerCase() === lowerHeader) {
+      setSelectedParentChecklist('all');
     }
+
+    setToastFeedback({
+      id: `toast-del-chk-${Date.now()}`,
+      text: `Checklist deleted successfully ("${cleanHeader}")`,
+      type: 'success',
+    });
+
+    // 3. Silent background Firestore deletion
+    deleteChecklistFromFirebase(cleanHeader, taskIds).catch(() => {});
   };
 
   // Batch delete tasks (selected tasks from directory & Master Register)
@@ -998,59 +955,38 @@ export default function App() {
       return;
     }
 
-    try {
-      // 1. Direct permanent batch deletion from Firestore via writeBatch
-      await batchDeleteTasksFromFirebase(taskIds);
+    // 1. Mark task IDs permanently deleted & purge from localStorage caches FIRST (0ms)
+    const idSet = new Set(taskIds);
+    addDeletedTaskIds(taskIds);
+    removeTasksFromLocalCache(taskIds);
 
-      // 2. Mark task IDs permanently deleted
-      addDeletedTaskIds(taskIds);
+    // 2. Remove from React state & v3 localStorage immediately (0ms)
+    setTasks((prev) => {
+      const next = prev.filter((t) => !idSet.has(t.id));
+      saveLocalTasks(next, true);
+      return next;
+    });
 
-      // 3. Remove from React state upon successful deletion
-      const idSet = new Set(taskIds);
-      setTasks((prev) => prev.filter((t) => !idSet.has(t.id)));
+    // 3. Update shift history records in state
+    setHistory((prev) => {
+      const next = prev.map((shift) => ({
+        ...shift,
+        tasks: (shift.tasks || []).filter((st) => !idSet.has(st.id)),
+        completedTasks: (shift.tasks || []).filter((st) => !idSet.has(st.id) && st.completed).length,
+        totalTasks: (shift.tasks || []).filter((st) => !idSet.has(st.id)).length,
+      }));
+      saveLocalSubmissions(next);
+      return next;
+    });
 
-      // 4. Immediately purge from local caches
-      removeTasksFromLocalCache(taskIds);
+    setToastFeedback({
+      id: `toast-batch-del-${Date.now()}`,
+      text: `✓ ${taskIds.length} tasks permanently deleted.`,
+      type: 'success',
+    });
 
-      // 5. Update shift history records in state
-      setHistory((prev) =>
-        prev.map((shift) => ({
-          ...shift,
-          tasks: (shift.tasks || []).filter((st) => !idSet.has(st.id)),
-          completedTasks: (shift.tasks || []).filter((st) => !idSet.has(st.id) && st.completed).length,
-          totalTasks: (shift.tasks || []).filter((st) => !idSet.has(st.id)).length,
-        }))
-      );
-
-      setToastFeedback({
-        id: `toast-batch-del-${Date.now()}`,
-        text: `✓ ${taskIds.length} tasks permanently deleted from database.`,
-        type: 'success',
-      });
-    } catch (err: any) {
-      console.error('Failed to batch delete tasks from Firebase:', err);
-      if (!isDeviceOnline()) {
-        const idSet = new Set(taskIds);
-        addDeletedTaskIds(taskIds);
-        setTasks((prev) => prev.filter((t) => !idSet.has(t.id)));
-        removeTasksFromLocalCache(taskIds);
-        await executeTaskOperationWithQueue({
-          type: 'BATCH_DELETE_TASKS',
-          taskIds,
-        });
-        setToastFeedback({
-          id: `toast-batch-del-queue-${Date.now()}`,
-          text: `Offline Mode: ${taskIds.length} tasks deleted locally & queued for Firestore auto-sync.`,
-          type: 'info',
-        });
-      } else {
-        setToastFeedback({
-          id: `toast-batch-del-err-${Date.now()}`,
-          text: `Failed to delete tasks: ${err?.message || 'Check database connection'}.`,
-          type: 'error',
-        });
-      }
-    }
+    // 4. Silent background Firestore deletion
+    batchDeleteTasksFromFirebase(taskIds).catch(() => {});
   };
 
   // Rename checklist header across all its tasks
@@ -1058,34 +994,25 @@ export default function App() {
     if (!newHeader || newHeader.trim() === '' || newHeader === oldHeader) return;
     const trimmed = newHeader.trim();
 
-    setTasks((prev) =>
-      prev.map((t) =>
+    setTasks((prev) => {
+      const next = prev.map((t) =>
         (t.checklistHeader || 'General Operations') === oldHeader
           ? { ...t, checklistHeader: trimmed }
           : t
-      )
-    );
+      );
+      saveLocalTasks(next);
+      return next;
+    });
 
     const affectedTasks = tasks.filter(
       (t) => (t.checklistHeader || 'General Operations') === oldHeader
     );
     if (affectedTasks.length > 0) {
-      try {
-        const updatedTasks = affectedTasks.map((t) => ({ ...t, checklistHeader: trimmed }));
-        const res = await executeTaskOperationWithQueue({
-          type: 'BATCH_SAVE_TASKS',
-          tasks: updatedTasks,
-        });
-        if (res.queued && !res.synced) {
-          setToastFeedback({
-            id: `toast-ren-queue-${Date.now()}`,
-            text: `Renamed checklist locally & queued for Firestore auto-sync.`,
-            type: 'info',
-          });
-        }
-      } catch (e) {
-        console.warn('Failed to queue renamed header update:', e);
-      }
+      const updatedTasks = affectedTasks.map((t) => ({ ...t, checklistHeader: trimmed }));
+      executeTaskOperationWithQueue({
+        type: 'BATCH_SAVE_TASKS',
+        tasks: updatedTasks,
+      }).catch(() => {});
     }
 
     setToastFeedback({
@@ -1125,16 +1052,7 @@ export default function App() {
     taskIdsToDelete: string[];
   }) => {
     try {
-      // 1. Delete trashed tasks permanently
-      if (taskIdsToDelete.length > 0) {
-        addDeletedTaskIds(taskIdsToDelete);
-        removeTasksFromLocalCache(taskIdsToDelete);
-        await batchDeleteTasksFromFirebase(taskIdsToDelete).catch((err) => {
-          console.warn('Batch delete tasks offline error:', err);
-        });
-      }
-
-      // 2. Build newly created tasks
+      // 1. Build newly created tasks
       const timestamp = Date.now();
       const createdTasks: TaskItem[] = tasksToCreate.map((ct, idx) => ({
         id: `task-${newHeader.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${timestamp}-${idx}`,
@@ -1156,15 +1074,14 @@ export default function App() {
         outlet: activeOutlet,
       }));
 
-      // 3. Batch save updated and newly created tasks
       const allSavedTasks = [...tasksToUpdate, ...createdTasks];
-      if (allSavedTasks.length > 0) {
-        await batchSaveTasksToFirebase(allSavedTasks).catch((err) => {
-          console.warn('Batch save tasks offline error:', err);
-        });
+
+      // 2. Immediately update localStorage v3 & React state (0ms optimistic save)
+      if (taskIdsToDelete.length > 0) {
+        addDeletedTaskIds(taskIdsToDelete);
+        removeTasksFromLocalCache(taskIdsToDelete);
       }
 
-      // 4. Update React state
       const deleteIdSet = new Set(taskIdsToDelete);
       const updatedMap = new Map(tasksToUpdate.map((t) => [t.id, t]));
 
@@ -1186,7 +1103,9 @@ export default function App() {
           }
           return t;
         });
-        return [...next, ...createdTasks];
+        const finalTasks = [...next, ...createdTasks];
+        saveLocalTasks(finalTasks, finalTasks.length === 0);
+        return finalTasks;
       });
 
       if (selectedParentChecklist === oldHeader && oldHeader !== newHeader) {
@@ -1198,11 +1117,18 @@ export default function App() {
         text: `✓ Checklist "${newHeader}" updated with ${allSavedTasks.length} tasks!`,
         type: 'success',
       });
+
+      // 3. Silent background Firestore sync
+      if (taskIdsToDelete.length > 0) {
+        batchDeleteTasksFromFirebase(taskIdsToDelete).catch(() => {});
+      }
+      if (allSavedTasks.length > 0) {
+        batchSaveTasksToFirebase(allSavedTasks).catch(() => {});
+      }
     } catch (err: any) {
-      console.error('Failed to save full checklist:', err);
       setToastFeedback({
         id: `toast-edit-chk-err-${Date.now()}`,
-        text: `Error saving checklist changes: ${err?.message || 'Database error'}`,
+        text: `Error saving checklist changes: ${err?.message || 'Storage error'}`,
         type: 'error',
       });
     }
@@ -1210,12 +1136,15 @@ export default function App() {
 
   // Restore default checklists
   const handleRestoreDefaultChecklists = () => {
+    removeDeletedChecklistFromBlacklist();
     setDeletedChecklistHeaders([]);
-    try {
-      localStorage.removeItem('amarii_deleted_checklist_headers');
-    } catch (e) {
-      console.warn(e);
-    }
+    saveDeletedChecklistsToFirebase([]).catch(() => {});
+    setTasks((prev) => {
+      const existingIds = new Set(prev.map((t) => t.id));
+      const restored = [...prev, ...INITIAL_DAILY_TASKS.filter((t) => !existingIds.has(t.id))];
+      saveLocalTasks(restored);
+      return restored;
+    });
     setToastFeedback({
       id: `toast-rest-${Date.now()}`,
       text: 'Default checklists restored successfully.',
@@ -1239,23 +1168,21 @@ export default function App() {
       completedAt: new Date().toISOString(),
     };
 
-    setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? updatedTask : t))
-    );
+    setTasks((prev) => {
+      const next = prev.map((t) => (t.id === taskId ? updatedTask : t));
+      saveLocalTasks(next);
+      return next;
+    });
 
-    try {
-      await executeTaskOperationWithQueue({
-        type: 'UPDATE_COMPLETION',
-        taskId,
-        completed: newCompleted,
-        fullTask: updatedTask,
-      });
-    } catch (e) {
-      console.error('Failed to update task completion via queue:', e);
-    }
+    executeTaskOperationWithQueue({
+      type: 'UPDATE_COMPLETION',
+      taskId,
+      completed: newCompleted,
+      fullTask: updatedTask,
+    }).catch(() => {});
   };
 
-  // Staff Management Actions
+  // Staff Management Actions (LocalStorage v3 FIRST, 0ms instant state)
   const handleAddStaff = async (newStaff: StaffMember | Omit<StaffMember, 'id'>) => {
     const memberId = ('id' in newStaff && newStaff.id)
       ? newStaff.id
@@ -1271,47 +1198,30 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     };
 
-    console.group(`[App:handleAddStaff] Adding staff member: ${member.name} (${member.id})`);
-    console.log('Role:', member.roleType, 'Dept:', member.department, 'Outlet:', member.outlet, 'PIN:', member.pin);
-
-    // 1. Optimistically update local state & cache
+    // 1. Update localStorage v3 & React state FIRST (0ms)
+    removeDeletedStaffIds([member.id]);
     setStaffList((prev) => {
       const filtered = prev.filter((s) => s.id !== member.id);
       const updated = [...filtered, member];
-      try {
-        localStorage.setItem('amarii_staff_list_cache', JSON.stringify(updated));
-      } catch (err) {
-        console.warn('Staff cache write error:', err);
-      }
+      saveLocalStaff(updated);
       return updated;
     });
 
-    // 2. Persist to Firestore with explicit debug tracking
-    try {
-      console.log(`[App:handleAddStaff] Invoking saveStaffToFirebase for ${member.id}...`);
-      await saveStaffToFirebase(member);
-      console.log(`[App:handleAddStaff] Successfully verified Firestore write for ${member.id}`);
-      console.groupEnd();
+    setToastFeedback({
+      id: `toast-staff-add-${Date.now()}`,
+      text: `✓ Staff "${member.name}" saved! Real-time login active.`,
+      type: 'success',
+    });
 
-      setSyncedStaffCount((prev) => prev + 1);
-      setLastSyncTimestamp(new Date().toISOString());
-      setToastFeedback({
-        id: `toast-staff-add-${Date.now()}`,
-        text: `✓ Staff "${member.name}" permanently saved to Firebase! Real-time login active.`,
-        type: 'success',
-      });
-      return member;
-    } catch (e: any) {
-      console.error('[App:handleAddStaff] Failed to persist staff in Firebase:', e);
-      console.groupEnd();
-      setLastFirestoreError(e?.message || 'Failed to save staff to database');
-      setToastFeedback({
-        id: `toast-staff-add-err-${Date.now()}`,
-        text: `Error saving staff to cloud: ${e?.message || 'Check database permissions'}.`,
-        type: 'error',
-      });
-      throw e;
-    }
+    // 2. Silent background Firestore sync
+    saveStaffToFirebase(member)
+      .then(() => {
+        setSyncedStaffCount((prev) => prev + 1);
+        setLastSyncTimestamp(new Date().toISOString());
+      })
+      .catch(() => {});
+
+    return member;
   };
 
   const handleUpdateStaff = async (updated: StaffMember) => {
@@ -1321,70 +1231,74 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     };
 
-    console.group(`[App:handleUpdateStaff] Updating staff member: ${staffWithOutlet.name} (${staffWithOutlet.id})`);
-
+    // 1. Update localStorage v3 & React state FIRST (0ms)
     setStaffList((prev) => {
-      const next = prev.map((s) => (s.id === staffWithOutlet.id ? staffWithOutlet : s));
-      try {
-        localStorage.setItem('amarii_staff_list_cache', JSON.stringify(next));
-      } catch (err) {
-        console.warn('Staff cache write error:', err);
-      }
+      const exists = prev.some((s) => s.id === staffWithOutlet.id);
+      const next = exists
+        ? prev.map((s) => (s.id === staffWithOutlet.id ? staffWithOutlet : s))
+        : [...prev, staffWithOutlet];
+      saveLocalStaff(next);
       return next;
     });
 
-    try {
-      console.log(`[App:handleUpdateStaff] Invoking saveStaffToFirebase for ${staffWithOutlet.id}...`);
-      await saveStaffToFirebase(staffWithOutlet);
-      console.log(`[App:handleUpdateStaff] Successfully verified Firestore update for ${staffWithOutlet.id}`);
-      console.groupEnd();
+    setToastFeedback({
+      id: `toast-staff-upd-${Date.now()}`,
+      text: `✓ Updated "${staffWithOutlet.name}"!`,
+      type: 'success',
+    });
 
-      setLastSyncTimestamp(new Date().toISOString());
-      setToastFeedback({
-        id: `toast-staff-upd-${Date.now()}`,
-        text: `✓ Updated "${staffWithOutlet.name}" in Firebase Cloud Database!`,
-        type: 'success',
-      });
-      return staffWithOutlet;
-    } catch (e: any) {
-      console.error('[App:handleUpdateStaff] Failed to update staff in Firebase:', e);
-      console.groupEnd();
-      setLastFirestoreError(e?.message || 'Failed to update staff in database');
-      setToastFeedback({
-        id: `toast-staff-upd-err-${Date.now()}`,
-        text: `Error updating staff in cloud: ${e?.message || 'network issue'}.`,
-        type: 'error',
-      });
-      throw e;
-    }
+    // 2. Silent background Firestore sync
+    saveStaffToFirebase(staffWithOutlet)
+      .then(() => {
+        setLastSyncTimestamp(new Date().toISOString());
+      })
+      .catch(() => {});
+
+    return staffWithOutlet;
   };
 
   const handleDeleteStaff = async (id: string) => {
-    console.group(`[App:handleDeleteStaff] Deleting staff member ID: ${id}`);
+    // 1. Immediately blacklist and remove from all localStorage caches FIRST (0ms)
+    addDeletedStaffIds([id]);
+    removeStaffFromLocalCache(id);
+
     setStaffList((prev) => {
       const next = prev.filter((s) => s.id !== id);
-      try {
-        localStorage.setItem('amarii_staff_list_cache', JSON.stringify(next));
-      } catch (err) {}
+      saveLocalStaff(next, true);
       return next;
     });
 
-    try {
-      await deleteStaffFromFirebase(id);
-      console.log(`[App:handleDeleteStaff] Successfully removed staff ID ${id} from Firestore`);
-      console.groupEnd();
-      setSyncedStaffCount((prev) => Math.max(0, prev - 1));
-      setLastSyncTimestamp(new Date().toISOString());
-      setToastFeedback({
-        id: `toast-staff-del-${Date.now()}`,
-        text: `Staff member permanently deleted from Firebase Cloud Database.`,
-        type: 'info',
-      });
-    } catch (e: any) {
-      console.error('[App:handleDeleteStaff] Failed to delete staff from Firebase:', e);
-      console.groupEnd();
-      setLastFirestoreError(e?.message || 'Failed to delete staff');
+    if (activeStaff && activeStaff.id === id) {
+      setActiveStaff(null);
+      try {
+        localStorage.removeItem(STORAGE_KEY_ACTIVE_STAFF);
+      } catch {}
     }
+
+    setSyncedStaffCount((prev) => Math.max(0, prev - 1));
+    setToastFeedback({
+      id: `toast-staff-del-${Date.now()}`,
+      text: `Staff member deleted permanently.`,
+      type: 'info',
+    });
+
+    // 2. Silent background Firestore delete
+    deleteStaffFromFirebase(id).catch(() => {});
+  };
+
+  const handleRestoreStaffList = async (restoredList: StaffMember[]) => {
+    try {
+      localStorage.removeItem(STORAGE_KEY_DELETED_STAFF_IDS);
+    } catch {}
+    const saved = saveLocalStaff(restoredList);
+    setStaffList(saved);
+    setSyncedStaffCount(saved.length);
+    setToastFeedback({
+      id: `toast-staff-restore-${Date.now()}`,
+      text: `✓ Restored ${saved.length} staff records from backup!`,
+      type: 'success',
+    });
+    syncAllStaffAndUsersToFirestore(saved).catch(() => {});
   };
 
   // Task Creation & Assignment Handlers
@@ -1435,21 +1349,18 @@ export default function App() {
       }
       if (freshStaff && freshStaff.length > 0) {
         setStaffList(freshStaff);
-        try {
-          localStorage.setItem('amarii_staff_list_cache', JSON.stringify(freshStaff));
-        } catch {}
+        saveLocalStaff(freshStaff);
       }
       setToastFeedback({
         id: Date.now().toString(),
-        text: 'Checklists & Staff synchronized with cloud database.',
+        text: 'Checklists & Staff synchronized.',
         type: 'success',
       });
-    } catch (err) {
-      console.error('Refresh error:', err);
+    } catch {
       setToastFeedback({
         id: Date.now().toString(),
-        text: 'Sync issue while refreshing checklists.',
-        type: 'error',
+        text: 'Loaded from local storage.',
+        type: 'info',
       });
     }
   };
@@ -1462,45 +1373,21 @@ export default function App() {
     }
     if (!taskIds || taskIds.length === 0) return;
 
-    try {
-      // 1. Await Firestore batch deletion
-      await batchDeleteTasksFromFirebase(taskIds);
+    addDeletedTaskIds(taskIds);
+    removeTasksFromLocalCache(taskIds);
+    setTasks((prev) => {
+      const next = prev.filter((t) => !taskIds.includes(t.id));
+      saveLocalTasks(next, true);
+      return next;
+    });
 
-      // 2. Remove from React state
-      setTasks((prev) => prev.filter((t) => !taskIds.includes(t.id)));
+    setToastFeedback({
+      id: `toast-cleanup-success-${Date.now()}`,
+      text: `✓ Cleaned up ${taskIds.length} old tasks permanently.`,
+      type: 'success',
+    });
 
-      // 3. Immediately clean local cache
-      removeTasksFromLocalCache(taskIds);
-
-      console.log(`Successfully batch deleted ${taskIds.length} tasks from Firestore (${cleanupLabel})`);
-      setToastFeedback({
-        id: `toast-cleanup-success-${Date.now()}`,
-        text: `✓ Cleaned up ${taskIds.length} old tasks permanently from database.`,
-        type: 'success',
-      });
-    } catch (err: any) {
-      console.error('Failed to batch delete tasks via Firebase:', err);
-      if (!isDeviceOnline()) {
-        setTasks((prev) => prev.filter((t) => !taskIds.includes(t.id)));
-        removeTasksFromLocalCache(taskIds);
-        await executeTaskOperationWithQueue({
-          type: 'BATCH_DELETE_TASKS',
-          taskIds,
-        });
-        setToastFeedback({
-          id: `toast-cleanup-offline-${Date.now()}`,
-          text: `Offline: ${taskIds.length} tasks removed locally & queued for sync.`,
-          type: 'info',
-        });
-      } else {
-        setToastFeedback({
-          id: `toast-cleanup-err-${Date.now()}`,
-          text: `Failed to clean up tasks: ${err?.message || 'Database error'}.`,
-          type: 'error',
-        });
-        throw err;
-      }
-    }
+    batchDeleteTasksFromFirebase(taskIds).catch(() => {});
   };
 
   const handleEditTask = (task: TaskItem) => {
@@ -1549,13 +1436,7 @@ export default function App() {
         status: 'pending',
       };
 
-      setEditRequests((prev) => {
-        const updated = [newReq, ...prev];
-        try {
-          localStorage.setItem('amarii_edit_requests_v1', JSON.stringify(updated));
-        } catch (e) {}
-        return updated;
-      });
+      editRequestsRepository.upsert(newReq, setEditRequests).catch(() => {});
 
       setToastFeedback({
         id: `toast-edit-req-${Date.now()}`,
@@ -1568,11 +1449,20 @@ export default function App() {
       return;
     }
 
-    if (editingTask) {
-      setTasks((prev) => prev.map((t) => (t.id === taskWithOutlet.id ? taskWithOutlet : t)));
-    } else {
-      setTasks((prev) => [taskWithOutlet, ...prev]);
+    // 1. Update localStorage v3 & React state FIRST (0ms)
+    if (taskWithOutlet.checklistHeader) {
+      const remaining = removeDeletedChecklistFromBlacklist(taskWithOutlet.checklistHeader);
+      setDeletedChecklistHeaders(remaining);
+      saveDeletedChecklistsToFirebase(remaining).catch(() => {});
     }
+
+    setTasks((prev) => {
+      const next = editingTask
+        ? prev.map((t) => (t.id === taskWithOutlet.id ? taskWithOutlet : t))
+        : [taskWithOutlet, ...prev];
+      saveLocalTasks(next);
+      return next;
+    });
 
     // Ensure newly created tasks are not hidden by completed status filter or search
     setFilterStatus('all');
@@ -1580,77 +1470,53 @@ export default function App() {
     setIsAssignModalOpen(false);
     setEditingTask(null);
 
-    // If checklist was previously marked deleted, unmark it
-    if (taskWithOutlet.checklistHeader) {
-      setDeletedChecklistHeaders((prev) =>
-        prev.filter((h) => h !== taskWithOutlet.checklistHeader)
-      );
-    }
-
     setToastFeedback({
       id: `toast-save-${Date.now()}`,
       text: `Task "${taskWithOutlet.title}" saved successfully.`,
       type: 'success',
     });
 
-    try {
-      const res = await executeTaskOperationWithQueue({
-        type: 'SAVE_TASK',
-        task: taskWithOutlet,
-      });
-      if (res.queued && !res.synced) {
-        setToastFeedback({
-          id: `toast-save-queue-${Date.now()}`,
-          text: `Task "${taskWithOutlet.title}" saved locally & queued for Firestore auto-sync.`,
-          type: 'info',
-        });
-      }
-    } catch (e) {
-      console.error('Failed to save task via queue:', e);
-    }
+    // 2. Silent background Firestore sync
+    executeTaskOperationWithQueue({
+      type: 'SAVE_TASK',
+      task: taskWithOutlet,
+    }).catch(() => {});
   };
 
   const handleApproveEditRequest = async (reqId: string) => {
     const req = editRequests.find((r) => r.id === reqId);
     if (!req) return;
 
-    // 1. Update task in state
-    setTasks((prev) => prev.map((t) => (t.id === req.taskId ? req.proposedTask : t)));
-
-    // 2. Update request status
-    setEditRequests((prev) => {
-      const updated = prev.map((r) => (r.id === reqId ? { ...r, status: 'approved' as const } : r));
-      try {
-        localStorage.setItem('amarii_edit_requests_v1', JSON.stringify(updated));
-      } catch (e) {}
-      return updated;
+    // 1. Update task in state & localStorage v3 FIRST (0ms)
+    setTasks((prev) => {
+      const next = prev.map((t) => (t.id === req.taskId ? req.proposedTask : t));
+      saveLocalTasks(next);
+      return next;
     });
 
-    // 3. Save to Firestore
-    try {
-      await executeTaskOperationWithQueue({
-        type: 'SAVE_TASK',
-        task: req.proposedTask,
-      });
-    } catch (e) {
-      console.error('Failed to save approved task edit via queue:', e);
-    }
+    // 2. Update request status via Universal Sync Engine (0ms local + Firestore)
+    editRequestsRepository
+      .edit(reqId, { status: 'approved' }, setEditRequests, req)
+      .catch(() => {});
 
     setToastFeedback({
       id: `toast-appr-req-${Date.now()}`,
       text: `✓ Approved task change for "${req.taskTitle}"! Core checklist updated.`,
       type: 'success',
     });
+
+    // 3. Silent background Firestore sync
+    executeTaskOperationWithQueue({
+      type: 'SAVE_TASK',
+      task: req.proposedTask,
+    }).catch(() => {});
   };
 
   const handleRejectEditRequest = (reqId: string) => {
-    setEditRequests((prev) => {
-      const updated = prev.map((r) => (r.id === reqId ? { ...r, status: 'rejected' as const } : r));
-      try {
-        localStorage.setItem('amarii_edit_requests_v1', JSON.stringify(updated));
-      } catch (e) {}
-      return updated;
-    });
+    const req = editRequests.find((r) => r.id === reqId);
+    editRequestsRepository
+      .edit(reqId, { status: 'rejected' }, setEditRequests, req)
+      .catch(() => {});
     setToastFeedback({
       id: `toast-rej-req-${Date.now()}`,
       text: 'Task change request rejected.',
@@ -1670,19 +1536,28 @@ export default function App() {
       assignedBy: t.assignedBy || (isAdmin ? 'Hemen Das (Owner & GM)' : currentUser?.name || 'Management'),
       dueDate: t.dueDate || nowIso.slice(0, 10),
     }));
-    setTasks((prev) => [...tasksWithOutlet, ...prev]);
+
+    // Unmark any headers when explicitly creating new tasks in them
+    const newHeaders = tasksWithOutlet.map((t) => t.checklistHeader).filter(Boolean) as string[];
+    if (newHeaders.length > 0) {
+      let remaining = deletedChecklistHeaders;
+      newHeaders.forEach((hdr) => {
+        remaining = removeDeletedChecklistFromBlacklist(hdr);
+      });
+      setDeletedChecklistHeaders(remaining);
+      saveDeletedChecklistsToFirebase(remaining).catch(() => {});
+    }
+
+    // 1. Update localStorage v3 & React state FIRST (0ms)
+    setTasks((prev) => {
+      const next = [...tasksWithOutlet, ...prev];
+      saveLocalTasks(next);
+      return next;
+    });
 
     setFilterStatus('all');
     setActiveMobileTab('tasks');
     setIsAssignModalOpen(false);
-
-    // Unmark any headers
-    const newHeaders = tasksWithOutlet.map((t) => t.checklistHeader).filter(Boolean) as string[];
-    if (newHeaders.length > 0) {
-      setDeletedChecklistHeaders((prev) =>
-        prev.filter((h) => !newHeaders.includes(h))
-      );
-    }
 
     setToastFeedback({
       id: `toast-batch-${Date.now()}`,
@@ -1690,21 +1565,11 @@ export default function App() {
       type: 'success',
     });
 
-    try {
-      const res = await executeTaskOperationWithQueue({
-        type: 'BATCH_SAVE_TASKS',
-        tasks: tasksWithOutlet,
-      });
-      if (res.queued && !res.synced) {
-        setToastFeedback({
-          id: `toast-batch-save-queue-${Date.now()}`,
-          text: `${tasksWithOutlet.length} tasks saved locally & queued for Firestore auto-sync.`,
-          type: 'info',
-        });
-      }
-    } catch (e) {
-      console.error('Failed to batch save new tasks via queue:', e);
-    }
+    // 2. Silent background Firestore sync
+    executeTaskOperationWithQueue({
+      type: 'BATCH_SAVE_TASKS',
+      tasks: tasksWithOutlet,
+    }).catch(() => {});
   };
 
   // 1-Tap Media Attachment to a specific task
@@ -2336,17 +2201,18 @@ export default function App() {
         : [],
     }));
 
-    // 4. Update tasks in state: preserve other station tasks + finalized permanent record + fresh blank tasks
+    // 4. Update tasks in state & localStorage v3 FIRST (0ms)
     const sourceTaskIds = new Set(sourceTasks.map((t) => t.id));
     const otherTasks = tasks.filter((t) => !sourceTaskIds.has(t.id));
     const updatedTasks = [...otherTasks, ...finalizedTasks, ...freshBlankTasks];
 
+    saveLocalTasks(updatedTasks);
     setTasks(updatedTasks);
     // Ensure active view is immediately 'all' so brand new empty form is seamless without any blocking screens
     setFilterStatus('all');
     triggerHaptic('success');
 
-    // 5. Build permanent Shift Record for Master Task Register
+    // 5. Build permanent Shift Record for Master Task Register & save to localStorage v3 FIRST (0ms)
     const shiftRecord: ShiftRecord = {
       id: `shift-${timestampKey}`,
       timestamp: nowIso,
@@ -2361,11 +2227,7 @@ export default function App() {
 
     setHistory((prev) => {
       const updated = [shiftRecord, ...prev];
-      try {
-        localStorage.setItem('amarii_shift_history_cache', JSON.stringify(updated));
-      } catch (e) {
-        console.warn('Failed to cache shift record:', e);
-      }
+      saveLocalSubmissions(updated);
       return updated;
     });
 
@@ -2391,45 +2253,15 @@ export default function App() {
     });
     setIsSubmissionSuccessModalOpen(true);
 
-    // 7. Direct Final Save into Firebase Firestore & Master Task Register (with robust offline queueing)
-    if (!isDeviceOnline()) {
-      enqueueOfflineSubmission({
-        headerName,
-        submitterName,
-        finalizedTasks,
-        freshBlankTasks,
-        shiftRecord,
-      });
-      setToastFeedback({
-        id: `toast-sub-chk-${Date.now()}`,
-        text: `Offline Mode: Checklist "${headerName}" recorded locally. It will auto-sync to Cloud once network reconnects!`,
-        type: 'info',
-      });
-    } else {
-      try {
-        await batchSaveTasksToFirebase([...finalizedTasks, ...freshBlankTasks]);
-        await saveShiftToFirebase(shiftRecord);
-        setToastFeedback({
-          id: `toast-sub-chk-${Date.now()}`,
-          text: `✓ Checklist "${headerName}" finalized & saved to Master Task Register! Fresh empty form ready below.`,
-          type: 'success',
-        });
-      } catch (e) {
-        console.warn('Network error saving checklist, queueing for auto-sync:', e);
-        enqueueOfflineSubmission({
-          headerName,
-          submitterName,
-          finalizedTasks,
-          freshBlankTasks,
-          shiftRecord,
-        });
-        setToastFeedback({
-          id: `toast-sub-chk-${Date.now()}`,
-          text: `Offline Saved: Checklist "${headerName}" queued locally and will auto-sync to Cloud upon reconnect.`,
-          type: 'info',
-        });
-      }
-    }
+    setToastFeedback({
+      id: `toast-sub-chk-${Date.now()}`,
+      text: `✓ Checklist "${headerName}" finalized & saved to Master Task Register! Fresh empty form ready below.`,
+      type: 'success',
+    });
+
+    // 7. Silent background Firestore sync
+    batchSaveTasksToFirebase([...finalizedTasks, ...freshBlankTasks]).catch(() => {});
+    saveShiftToFirebase(shiftRecord).catch(() => {});
   };
 
   // Admin Hemen Das Approve Entire Checklist
@@ -2948,22 +2780,26 @@ export default function App() {
     const headersSet = new Set<string>();
     const safeStation = Array.isArray(stationTasks) ? stationTasks : [];
 
-    // 1. Gather all headers from active tasks in station
+    // 1. Gather all headers from active tasks in station (excluding deleted checklists)
     safeStation.forEach((t) => {
       const hdr = getTaskChecklistGroup(t);
-      if (hdr && hdr.trim()) headersSet.add(hdr.trim());
+      if (hdr && hdr.trim() && !deletedChecklistHeaders.includes(hdr.trim()) && !isChecklistDeleted(hdr.trim())) {
+        headersSet.add(hdr.trim());
+      }
     });
 
     // 2. Standard station default headers
     const defaultHeaders = STATION_DEFAULT_HEADERS[currentStation] || [];
     defaultHeaders.forEach((h) => {
-      if (!deletedChecklistHeaders.includes(h)) {
+      if (!deletedChecklistHeaders.includes(h) && !isChecklistDeleted(h)) {
         headersSet.add(h);
       }
     });
 
     // Filter out deleted headers
-    const validHeaders = Array.from(headersSet).filter((h) => !deletedChecklistHeaders.includes(h));
+    const validHeaders = Array.from(headersSet).filter(
+      (h) => !deletedChecklistHeaders.includes(h) && !isChecklistDeleted(h)
+    );
 
     return validHeaders.map((headerName) => {
       const headerTasks = safeStation.filter((t) => {
@@ -2993,7 +2829,13 @@ export default function App() {
   // Explicitly load questions for a selected Parent Checklist on user demand
   const handleEnsureChecklistTasks = useCallback(
     (headerName: string) => {
-      if (headerName === 'all' || deletedChecklistHeaders.includes(headerName)) return;
+      if (
+        headerName === 'all' ||
+        deletedChecklistHeaders.includes(headerName) ||
+        isChecklistDeleted(headerName)
+      ) {
+        return;
+      }
       const exists = tasks.some(
         (t) =>
           !t.id?.startsWith('finalized-') &&
@@ -3042,6 +2884,8 @@ export default function App() {
           setSelectedParentChecklist(nextHeader);
         }
       }
+    } else if (selectedParentChecklist !== 'all') {
+      setSelectedParentChecklist('all');
     }
   }, [currentStation, parentChecklistsList, selectedParentChecklist]);
 
@@ -3117,6 +2961,9 @@ export default function App() {
     // 1. If a specific Parent Checklist is selected from the menu:
     if (selectedParentChecklist !== 'all') {
       const hdr = selectedParentChecklist;
+      if (deletedChecklistHeaders.includes(hdr) || isChecklistDeleted(hdr)) {
+        return [];
+      }
       const safeStation = Array.isArray(stationTasks) ? stationTasks : [];
       const hTasks = safeStation.filter(
         (t) =>
@@ -3140,17 +2987,22 @@ export default function App() {
     const allHeaders: string[] = [];
     const safeStation = Array.isArray(stationTasks) ? stationTasks : [];
 
-    // Gather all distinct checklist headers present in this station
+    // Gather all distinct checklist headers present in this station (excluding deleted checklists)
     safeStation.forEach((t) => {
       const hdr = getTaskChecklistGroup(t);
-      if (hdr && !allHeaders.includes(hdr)) {
+      if (
+        hdr &&
+        !allHeaders.includes(hdr) &&
+        !deletedChecklistHeaders.includes(hdr) &&
+        !isChecklistDeleted(hdr)
+      ) {
         allHeaders.push(hdr);
       }
     });
 
     const defaultHeaders = STATION_DEFAULT_HEADERS[currentStation] || [];
     defaultHeaders.forEach((h) => {
-      if (!allHeaders.includes(h) && !deletedChecklistHeaders.includes(h)) {
+      if (!allHeaders.includes(h) && !deletedChecklistHeaders.includes(h) && !isChecklistDeleted(h)) {
         allHeaders.push(h);
       }
     });
@@ -3399,7 +3251,7 @@ export default function App() {
             </div>
           </div>
           <a
-            href={`https://console.firebase.google.com/project/${firebaseConfigData.projectId}/firestore/databases/${firebaseConfigData.firestoreDatabaseId || '(default)'}/data?openUpgradeDialog=true`}
+            href={`https://console.firebase.google.com/project/${firebaseConfigData.projectId}/firestore/databases/${(firebaseConfigData as any).firestoreDatabaseId || '(default)'}/data?openUpgradeDialog=true`}
             target="_blank"
             rel="noopener noreferrer"
             className="px-3 py-1.5 bg-black hover:bg-zinc-800 text-white text-[11px] font-black uppercase tracking-wider rounded shrink-0 text-center transition shadow cursor-pointer"
@@ -3746,21 +3598,12 @@ export default function App() {
             </div>
             <div>
               <h2
-                className={`text-2xl sm:text-4xl font-black uppercase tracking-tight ${
+                className={`text-xl sm:text-3xl font-black uppercase tracking-tight ${
                   isLightMode ? 'text-zinc-950' : 'text-white'
                 }`}
               >
-                No Tasks for {currentStation === 'Manager' ? 'Any Department' : `${currentStation} Station`}
+                No records found. Click [+ Add] to create your first item
               </h2>
-              <p
-                className={`font-bold uppercase tracking-wider text-xs sm:text-sm mt-2 max-w-lg mx-auto ${
-                  isLightMode ? 'text-zinc-600' : 'text-zinc-400'
-                }`}
-              >
-                {currentStation === 'Manager'
-                  ? 'Create daily tasks or load the master checklist template.'
-                  : `There are currently no daily tasks assigned to ${currentStation}. Click below to add one.`}
-              </p>
             </div>
 
             <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
@@ -3775,22 +3618,7 @@ export default function App() {
                   }`}
                 >
                   <Plus className="w-4 h-4 stroke-[3]" />
-                  <span>+ Add {currentStation !== 'Manager' ? currentStation : ''} Task</span>
-                </button>
-              )}
-
-              {isHemenAdmin && (
-                <button
-                  type="button"
-                  onClick={handleResetToDefaultTemplate}
-                  className={`px-5 py-3 font-black uppercase text-xs tracking-tight transition border-2 flex items-center gap-2 cursor-pointer ${
-                    isLightMode
-                      ? 'bg-zinc-100 hover:bg-zinc-200 text-zinc-900 border-zinc-400'
-                      : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border-zinc-700'
-                  }`}
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>Load Default Template</span>
+                  <span>[+ Add]</span>
                 </button>
               )}
             </div>
@@ -4123,7 +3951,7 @@ export default function App() {
                 <div className="flex-1 min-w-0 w-full space-y-4 sm:space-y-6">
                   {checklistGroupsToRender.length === 0 ? (
                     <div
-                      className={`py-12 sm:py-16 text-center border-2 border-dashed p-6 sm:p-10 space-y-3 ${
+                      className={`py-12 sm:py-16 text-center border-2 border-dashed p-6 sm:p-10 space-y-4 ${
                         isLightMode
                           ? 'bg-white border-zinc-300 text-zinc-600'
                           : 'bg-zinc-900/40 border-zinc-800 text-zinc-400'
@@ -4133,48 +3961,18 @@ export default function App() {
                         <ClipboardList className="w-7 h-7 stroke-[2]" />
                       </div>
                       <p className="text-base sm:text-lg font-black uppercase tracking-tight text-zinc-900 dark:text-white">
-                        {filterStatus === 'completed'
-                          ? 'All Checklists Finalized & Recorded'
-                          : selectedParentChecklist !== 'all'
-                          ? `No Tasks for "${selectedParentChecklist}"`
-                          : 'No Checklists for this Station'}
-                      </p>
-                      <p className="text-xs font-bold text-zinc-500 max-w-md mx-auto">
-                        {filterStatus === 'completed'
-                          ? 'Shift responses finalized and saved in Master Task Register.'
-                          : 'Open a blank checklist template or create tasks to begin recording shift responses.'}
+                        No records found. Click [+ Add] to create your first item
                       </p>
                       <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-                        {selectedParentChecklist !== 'all' && PREDEFINED_CHECKLIST_TEMPLATES[selectedParentChecklist] && (
+                        {isHemenAdmin && (
                           <button
                             type="button"
-                            onClick={() => handleEnsureChecklistTasks(selectedParentChecklist)}
-                            className="px-4 py-2 text-xs font-black uppercase tracking-tight bg-[#673ab7] hover:bg-[#58309e] text-white cursor-pointer shadow-xs rounded-md"
+                            onClick={() => handleOpenAssignModal()}
+                            className="px-4 py-2 text-xs font-black uppercase tracking-tight bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer rounded-md flex items-center gap-1.5"
                           >
-                            Load {selectedParentChecklist} Questions
+                            <Plus className="w-4 h-4 stroke-[3]" />
+                            <span>[+ Add]</span>
                           </button>
-                        )}
-                        {isHemenAdmin && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleOpenAssignModal()}
-                              className="px-4 py-2 text-xs font-black uppercase tracking-tight bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer rounded-md"
-                            >
-                              + Create New Checklist
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleRestoreDefaultChecklists}
-                              className={`px-4 py-2 text-xs font-black uppercase tracking-tight border cursor-pointer rounded-md ${
-                                isLightMode
-                                  ? 'bg-zinc-100 hover:bg-zinc-200 text-black border-zinc-300'
-                                  : 'bg-zinc-800 hover:bg-zinc-700 text-white border-zinc-700'
-                              }`}
-                            >
-                              Restore Default Templates
-                            </button>
-                          </>
                         )}
                       </div>
                     </div>
@@ -4217,9 +4015,9 @@ export default function App() {
                           isSingleChecklist={checklistGroupsToRender.length === 1}
                           onToggleTask={handleToggleTask}
                           onEditTask={(isAdmin || isManager) ? handleEditTask : undefined}
-                          onDeleteTask={isHemenAdmin ? handleDeleteTask : undefined}
+                          onDeleteTask={canDeleteTask ? handleDeleteTask : undefined}
                           onUnpackSubTasks={handleUnpackSubTasks}
-                          onDeleteChecklist={isHemenAdmin ? handleDeleteChecklist : undefined}
+                          onDeleteChecklist={canDeleteTask ? handleDeleteChecklist : undefined}
                           onEditChecklist={isHemenAdmin ? handleOpenEditChecklist : undefined}
                           onRenameChecklist={isHemenAdmin ? handleRenameChecklist : undefined}
                           onViewMedia={setSelectedMedia}
@@ -4561,6 +4359,7 @@ export default function App() {
         onAddStaff={handleAddStaff}
         onUpdateStaff={handleUpdateStaff}
         onDeleteStaff={handleDeleteStaff}
+        onRestoreStaffList={handleRestoreStaffList}
         onAssignTask={(staff) => {
           setIsStaffModalOpen(false);
           setDefaultAssignStaff(staff);

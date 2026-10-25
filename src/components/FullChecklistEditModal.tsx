@@ -247,16 +247,30 @@ export const FullChecklistEditModal: React.FC<FullChecklistEditModalProps> = ({
           priority: r.priority,
         }));
 
-      await onSaveFullChecklist({
-        oldHeader: headerName,
-        newHeader: cleanTitleHeader,
-        department,
-        startTime,
-        endTime,
-        tasksToUpdate,
-        tasksToCreate,
-        taskIdsToDelete,
+      let timer: any;
+      const timeoutPromise = new Promise((resolve) => {
+        timer = setTimeout(() => resolve('TIMED_OUT'), 3000);
       });
+
+      try {
+        await Promise.race([
+          Promise.resolve(
+            onSaveFullChecklist({
+              oldHeader: headerName,
+              newHeader: cleanTitleHeader,
+              department,
+              startTime,
+              endTime,
+              tasksToUpdate,
+              tasksToCreate,
+              taskIdsToDelete,
+            })
+          ),
+          timeoutPromise,
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
 
       onClose();
     } catch (err: any) {

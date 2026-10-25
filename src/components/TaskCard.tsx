@@ -95,24 +95,11 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     e.preventDefault();
     e.stopPropagation();
 
-    if (!task || !task.id) {
-      console.error('TaskCard: Missing task.id for delete', task);
+    if (!task || !task.id || !isDeleteAllowed) {
       return;
     }
 
-    if (!isDeleteAllowed) {
-      return;
-    }
-
-    if (confirmDelete) {
-      if (onDeleteTask) {
-        onDeleteTask(task.id);
-        setConfirmDelete(false);
-      }
-    } else {
-      setConfirmDelete(true);
-      setTimeout(() => setConfirmDelete(false), 3000);
-    }
+    setConfirmDelete(true);
   };
 
   // Inline notes editing state for parent
@@ -1111,19 +1098,78 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                   id={`delete-task-${task.id}`}
                   onClick={handleDeleteTaskCard}
                   className="p-1 text-zinc-400 hover:text-red-600 rounded cursor-pointer"
-                  title={confirmDelete ? 'Click again to confirm delete' : `Delete question`}
+                  title="Delete question"
                 >
-                  {confirmDelete ? (
-                    <span className="text-[9px] font-black uppercase text-red-600">Delete?</span>
-                  ) : (
-                    <Trash2 className="w-3 h-3" />
-                  )}
+                  <Trash2 className="w-3 h-3" />
                 </button>
               )}
             </div>
           </div>
         </div>
       </div>
+
+      {/* Strict Delete Task Confirmation Modal */}
+      {confirmDelete && onDeleteTask && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm Task Deletion"
+          onClick={(e) => e.stopPropagation()}
+          className="fixed inset-0 z-70 bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-150 backdrop-blur-sm"
+        >
+          <div className="max-w-md w-full bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white border-4 border-red-600 shadow-2xl p-5 space-y-4 rounded-xs">
+            <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-2.5">
+              <div className="flex items-center gap-2 text-red-600 dark:text-red-500">
+                <AlertCircle className="w-5 h-5 stroke-[2.5]" />
+                <h3 className="text-sm font-black uppercase tracking-wider">
+                  Confirm Permanent Deletion
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmDelete(false);
+                }}
+                className="p-1 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs sm:text-sm font-bold leading-relaxed">
+              Are you sure you want to delete <span className="text-red-600 dark:text-red-400 font-black">"{task.title}"</span>? This action cannot be undone.
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-zinc-800">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setConfirmDelete(false);
+                }}
+                className="px-3.5 py-2 text-xs font-black uppercase tracking-wider rounded-xs bg-zinc-200 hover:bg-zinc-300 text-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-200 cursor-pointer transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setConfirmDelete(false);
+                  onDeleteTask(task.id);
+                }}
+                className="px-4 py-2 text-xs font-black uppercase tracking-wider rounded-xs bg-red-600 hover:bg-red-500 text-white flex items-center gap-1.5 cursor-pointer shadow-md transition"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Yes, Permanently Delete</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Direct Live Camera Modal */}
       <LiveCameraModal

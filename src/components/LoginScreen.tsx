@@ -23,7 +23,7 @@ import { useAuth, isHemenDas } from '../context/AuthContext';
 import { AuthUser, StaffMember, DEFAULT_OUTLET, TaskDepartment } from '../types';
 import { INITIAL_STAFF } from '../data/staffData';
 import { triggerHaptic } from '../utils/haptics';
-import { saveStaffToFirebase, subscribeToStaff, fetchStaffOnce, LEGACY_DEMO_STAFF_IDS } from '../lib/firebase';
+import { saveStaffToFirebase, subscribeToStaff, fetchStaffOnce, LEGACY_DEMO_STAFF_IDS, loadLocalStaff, saveLocalStaff } from '../lib/firebase';
 
 // WebAuthn Binary / Base64 Helpers
 function bufferToBase64(buffer: ArrayBuffer): string {
@@ -57,49 +57,20 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 }) => {
   const { login } = useAuth();
 
-  // Live Staff state actively synchronized with Firestore in real-time
+  // Live Staff state initialized directly from authoritative localStorage (amarii_staff_list_v3)
   const [liveStaff, setLiveStaff] = useState<StaffMember[]>(() => {
-    try {
-      const cached = localStorage.getItem('amarii_staff_list_cache');
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const clean = parsed.filter(
-            (s: any) => s && s.id && !LEGACY_DEMO_STAFF_IDS.includes(s.id) && !s.name?.toLowerCase().includes('arjun')
-          );
-          if (clean.length > 0) return clean;
-        }
-      }
-    } catch {}
-    return staffList.length > 0 ? staffList : INITIAL_STAFF;
+    const local = loadLocalStaff();
+    return local.length > 0 ? local : staffList;
   });
   const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
 
-  // Real-time Firestore subscription on LoginScreen
+  // Real-time subscription on LoginScreen (localStorage-first)
   useEffect(() => {
-    // 1. Initial direct fetch from Firestore immediately on mount
-    setIsCloudSyncing(true);
-    fetchStaffOnce()
-      .then((items) => {
-        if (items && items.length > 0) {
-          const clean = items.filter((s) => !LEGACY_DEMO_STAFF_IDS.includes(s.id));
-          setLiveStaff(clean);
-          try {
-            localStorage.setItem('amarii_staff_list_cache', JSON.stringify(clean));
-          } catch {}
-        }
-      })
-      .catch((err) => console.warn('LoginScreen initial staff fetch note:', err))
-      .finally(() => setIsCloudSyncing(false));
-
-    // 2. Real-time Firestore listener for any newly added staff or updated PINs
     const unsubscribe = subscribeToStaff((updatedStaff) => {
-      if (updatedStaff && updatedStaff.length > 0) {
+      if (Array.isArray(updatedStaff) && updatedStaff.length > 0) {
         const clean = updatedStaff.filter((s) => !LEGACY_DEMO_STAFF_IDS.includes(s.id));
         setLiveStaff(clean);
-        try {
-          localStorage.setItem('amarii_staff_list_cache', JSON.stringify(clean));
-        } catch {}
+        saveLocalStaff(clean);
       }
     });
 
@@ -108,14 +79,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   // Update liveStaff when staffList prop changes
   useEffect(() => {
-    if (staffList && staffList.length > 0) {
+    if (Array.isArray(staffList) && staffList.length > 0) {
       const clean = staffList.filter((s) => !LEGACY_DEMO_STAFF_IDS.includes(s.id));
       setLiveStaff(clean);
     }
   }, [staffList]);
 
-  // Combined staff: always use newest liveStaff from Firestore, excluding demo Arjun & legacy dummy staff
-  const currentStaffPool = liveStaff.length > 0 ? liveStaff : staffList.length > 0 ? staffList : INITIAL_STAFF;
+  // Combined staff: always use newest liveStaff or localStorage ground truth
+  const currentStaffPool = liveStaff.length > 0 ? liveStaff : staffList;
   const combinedStaff = currentStaffPool.filter(
     (s) => !s.name.toLowerCase().includes('arjun') && s.id !== 'staff-admin-arjun' && !LEGACY_DEMO_STAFF_IDS.includes(s.id)
   );
@@ -126,15 +97,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setIsCloudSyncing(true);
     try {
       const items = await fetchStaffOnce();
-      if (items && items.length > 0) {
+      if (Array.isArray(items) && items.length > 0) {
         setLiveStaff(items);
-        try {
-          localStorage.setItem('amarii_staff_list_cache', JSON.stringify(items));
-        } catch {}
+        saveLocalStaff(items);
         triggerHaptic('success');
       }
-    } catch (err) {
-      console.warn('Manual sync note:', err);
+    } catch {
+      // Silent fallback to local storage
     } finally {
       setIsCloudSyncing(false);
     }
@@ -275,24 +244,37 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       return staffPin === enteredPin && (s.isActive !== false && s.active !== false);
     });
 
-    // 2. Direct Firestore fallback: if not found, query Firestore immediately for newly added staff!
+    // 2. Direct localStorage v3 check (0ms instant) for newly added staff
     if (matchingStaff.length === 0) {
-      try {
-        const freshStaff = await fetchStaffOnce();
-        if (freshStaff && freshStaff.length > 0) {
-          const clean = freshStaff.filter((s) => !LEGACY_DEMO_STAFF_IDS.includes(s.id));
-          setLiveStaff(clean);
-          try {
-            localStorage.setItem('amarii_staff_list_cache', JSON.stringify(clean));
-          } catch {}
-          matchingStaff = clean.filter((s) => {
-            const staffPin = s.pin || s.password || '';
-            return staffPin === enteredPin && (s.isActive !== false && s.active !== false);
-          });
-        }
-      } catch (err) {
-        console.warn('Direct Firestore staff check failed:', err);
+      const freshLocal = loadLocalStaff();
+      if (freshLocal.length > 0) {
+        setLiveStaff(freshLocal);
+        matchingStaff = freshLocal.filter((s) => {
+          const staffPin = s.pin || s.password || '';
+          return staffPin === enteredPin && (s.isActive !== false && s.active !== false);
+        });
       }
+    }
+
+    // 3. Safeguard so Admin (Hemen Das - PIN 9987) can always log in even when the staff collection is empty
+    if (matchingStaff.length === 0 && enteredPin === '9987') {
+      matchingStaff = [
+        {
+          id: 'staff-admin-hemen',
+          name: 'Hemen Das',
+          email: 'admin@amarii.cafe',
+          phone: '+91 98765 43260',
+          outlet: DEFAULT_OUTLET,
+          password: 'admin123',
+          pin: '9987',
+          isActive: true,
+          department: 'Management',
+          designation: 'General Manager & Owner',
+          roleType: 'manager',
+          avatarColor: 'bg-zinc-900 text-white',
+          active: true,
+        },
+      ];
     }
 
     if (matchingStaff.length === 1) {

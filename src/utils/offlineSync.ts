@@ -251,17 +251,6 @@ export function useOfflineAutoSync(
     }
   }, [isOnline, triggerSync]);
 
-  // Periodic fallback check every 30 seconds
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (isDeviceOnline() && getQueuedSubmissions().length > 0) {
-        triggerSync();
-      }
-    }, 30000);
-
-    return () => clearInterval(interval);
-  }, [triggerSync]);
-
   return {
     isOnline,
     pendingCount,
@@ -269,3 +258,4 @@ export function useOfflineAutoSync(
     triggerSync,
   };
 }
+

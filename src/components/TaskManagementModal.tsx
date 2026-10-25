@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Cloud,
   Check,
+  Loader2,
 } from 'lucide-react';
 import { TaskItem, TaskEditRequest } from '../types';
 import { useTheme } from '../context/ThemeContext';
@@ -32,7 +33,7 @@ interface TaskManagementModalProps {
   onEditTask: (task: TaskItem) => void;
   onDuplicateTask: (task: TaskItem) => void;
   onDeleteTask: (taskId: string) => void;
-  onDeleteChecklist?: (headerName: string) => void;
+  onDeleteChecklist?: (headerName: string) => Promise<void> | void;
   onEditChecklist?: (headerName: string) => void;
   onBatchDeleteTasks?: (taskIds: string[]) => void;
   onAddTaskToHeader?: (headerName: string) => void;
@@ -60,8 +61,10 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
   const { isAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState<'checklists' | 'tasks' | 'requests'>('checklists');
   const [searchQuery, setSearchQuery] = useState('');
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [taskPendingDelete, setTaskPendingDelete] = useState<TaskItem | null>(null);
   const [confirmDeleteHeader, setConfirmDeleteHeader] = useState<string | null>(null);
+  const [deletingChecklistHeader, setDeletingChecklistHeader] = useState<string | null>(null);
+  const [checklistDeleteToast, setChecklistDeleteToast] = useState<string | null>(null);
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [confirmBulkDelete, setConfirmBulkDelete] = useState<boolean>(false);
   const { queue, pendingCount, isOnline, isSyncing, triggerSync } = useTaskQueue();
@@ -171,6 +174,34 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
       console.error('Bulk delete tasks error in modal:', e);
     } finally {
       setConfirmBulkDelete(false);
+    }
+  };
+
+  // Execute entire checklist delete with 3-second timeout protection
+  const handleExecuteChecklistDelete = async (e: React.MouseEvent, headerName: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!onDeleteChecklist || deletingChecklistHeader) return;
+
+    setDeletingChecklistHeader(headerName);
+    let timeoutId: any;
+    const timeoutPromise = new Promise((resolve) => {
+      timeoutId = setTimeout(() => resolve('TIMED_OUT'), 3000);
+    });
+
+    try {
+      await Promise.race([
+        Promise.resolve(onDeleteChecklist(headerName)),
+        timeoutPromise,
+      ]);
+      setChecklistDeleteToast(`Checklist deleted successfully ("${headerName}")`);
+      setTimeout(() => setChecklistDeleteToast(null), 4000);
+    } catch (err) {
+      console.error('Error deleting checklist in modal:', err);
+    } finally {
+      clearTimeout(timeoutId);
+      setDeletingChecklistHeader(null);
+      setConfirmDeleteHeader(null);
     }
   };
 
@@ -380,20 +411,53 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
           {/* TAB 1: CHECKLISTS DIRECTORY */}
           {activeTab === 'checklists' && (
             <div className="flex-1 overflow-auto p-4 sm:p-6 space-y-4">
+              {checklistDeleteToast && (
+                <div className="p-3 bg-emerald-600 text-white text-xs sm:text-sm font-black uppercase tracking-tight flex items-center justify-between gap-2 shadow-md">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span>{checklistDeleteToast}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setChecklistDeleteToast(null);
+                    }}
+                    className="p-1 hover:bg-emerald-700 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
               {filteredChecklistGroups.length === 0 ? (
                 <div
-                  className={`p-8 text-center text-sm font-bold uppercase tracking-wider border-2 border-dashed ${
+                  className={`p-8 text-center flex flex-col items-center justify-center gap-3 text-sm font-bold uppercase tracking-wider border-2 border-dashed ${
                     isLightMode
                       ? 'bg-white border-zinc-300 text-zinc-500'
                       : 'bg-zinc-900/40 border-[#1D3528] text-zinc-400'
                   }`}
                 >
-                  No checklists found matching "{searchQuery}".
+                  <span>No records found. Click [+ Add] to create your first item</span>
+                  {onAddTaskToHeader && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onAddTaskToHeader('');
+                      }}
+                      className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-black uppercase tracking-wider rounded-xs flex items-center gap-1.5 cursor-pointer transition"
+                    >
+                      <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                      <span>[+ Add]</span>
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {filteredChecklistGroups.map((group) => {
                     const isConfirmingDelete = confirmDeleteHeader === group.header;
+                    const isDeletingThis = deletingChecklistHeader === group.header;
                     return (
                       <div
                         key={group.header}
@@ -471,13 +535,58 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                           </div>
                         </div>
 
+                        {/* Confirmation Prompt Banner inside Checklist Card */}
+                        {isConfirmingDelete && onDeleteChecklist && (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className="mt-3 p-3.5 bg-red-50 dark:bg-red-950/60 border-2 border-red-600 text-red-950 dark:text-red-100 space-y-2.5"
+                          >
+                            <p className="text-xs font-black">
+                              Are you sure you want to delete "{group.header}"? This action cannot be undone.
+                            </p>
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setConfirmDeleteHeader(null);
+                                }}
+                                disabled={isDeletingThis}
+                                className="px-3 py-1.5 text-[11px] font-black uppercase bg-zinc-200 hover:bg-zinc-300 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200 cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => handleExecuteChecklistDelete(e, group.header)}
+                                disabled={isDeletingThis}
+                                className="px-3.5 py-1.5 text-[11px] font-black uppercase bg-red-600 hover:bg-red-500 text-white flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                              >
+                                {isDeletingThis ? (
+                                  <>
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    <span>Deleting...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    <span>Yes, Permanently Delete</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
                         {/* Action Buttons */}
                         <div className="flex flex-wrap items-center justify-between gap-2 pt-3 mt-2 border-t border-zinc-200 dark:border-[#1D3528]">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             {onAddTaskToHeader && (
                               <button
                                 type="button"
-                                onClick={() => {
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   onClose();
                                   onAddTaskToHeader(group.header);
                                 }}
@@ -495,7 +604,8 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                             {onEditChecklist && (
                               <button
                                 type="button"
-                                onClick={() => {
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   onClose();
                                   onEditChecklist(group.header);
                                 }}
@@ -515,34 +625,34 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                           {onDeleteChecklist && (
                             <button
                               type="button"
-                              onClick={() => {
-                                if (isConfirmingDelete) {
-                                  onDeleteChecklist(group.header);
-                                  setConfirmDeleteHeader(null);
-                                } else {
-                                  setConfirmDeleteHeader(group.header);
-                                  setTimeout(() => setConfirmDeleteHeader(null), 4000);
-                                }
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setConfirmDeleteHeader((prev) =>
+                                  prev === group.header ? null : group.header
+                                );
                               }}
+                              disabled={isDeletingThis}
                               className={`text-xs font-black uppercase tracking-tight px-3 py-1.5 border transition flex items-center gap-1.5 cursor-pointer ml-auto ${
                                 isConfirmingDelete
-                                  ? 'bg-red-600 text-white border-red-600 animate-pulse'
+                                  ? 'bg-red-600 text-white border-red-600'
                                   : isLightMode
                                   ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
                                   : 'bg-red-950/30 hover:bg-red-900/60 text-red-400 border-red-900/50'
                               }`}
-                              title={
-                                isConfirmingDelete
-                                  ? 'Click to permanently delete this checklist and all its tasks'
-                                  : 'Delete entire checklist'
-                              }
+                              title="Delete entire checklist and all its associated tasks"
                             >
-                              <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
-                              <span>
-                                {isConfirmingDelete
-                                  ? `Confirm Delete (${group.total})?`
-                                  : 'Delete Checklist'}
-                              </span>
+                              {isDeletingThis ? (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  <span>Deleting...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
+                                  <span>[DELETE CHECKLIST]</span>
+                                </>
+                              )}
                             </button>
                           )}
                         </div>
@@ -584,26 +694,11 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => {
-                        if (confirmBulkDelete) {
-                          handleExecuteBulkDelete();
-                        } else {
-                          setConfirmBulkDelete(true);
-                          setTimeout(() => setConfirmBulkDelete(false), 4000);
-                        }
-                      }}
-                      className={`px-3 py-1.5 text-xs font-black uppercase tracking-tight border transition flex items-center gap-1.5 cursor-pointer ${
-                        confirmBulkDelete
-                          ? 'bg-red-600 text-white border-red-600 animate-pulse'
-                          : 'bg-red-600 hover:bg-red-700 text-white border-red-700'
-                      }`}
+                      onClick={() => setConfirmBulkDelete(true)}
+                      className="px-3 py-1.5 text-xs font-black uppercase tracking-tight border transition flex items-center gap-1.5 cursor-pointer bg-red-600 hover:bg-red-700 text-white border-red-700"
                     >
                       <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
-                      <span>
-                        {confirmBulkDelete
-                          ? `Confirm Delete (${selectedTaskIds.length})?`
-                          : `Delete Selected (${selectedTaskIds.length})`}
-                      </span>
+                      <span>Delete Selected ({selectedTaskIds.length})</span>
                     </button>
                   </div>
                 </div>
@@ -657,7 +752,7 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                           isLightMode ? 'text-zinc-500' : 'text-zinc-600'
                         }`}
                       >
-                        No tasks found matching your search.
+                        No records found. Click [+ Add] to create your first item
                       </div>
                     ) : (
                       filteredTasks.map((task, taskIdx) => {
@@ -815,28 +910,16 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
-                                  if (confirmDeleteId === task.id) {
-                                    onDeleteTask(task.id);
-                                    setConfirmDeleteId(null);
-                                  } else {
-                                    setConfirmDeleteId(task.id);
-                                    setTimeout(() => setConfirmDeleteId(null), 3000);
-                                  }
+                                  setTaskPendingDelete(task);
                                 }}
                                 className={`p-1.5 border transition cursor-pointer flex items-center justify-center ${
                                   isLightMode
                                     ? 'bg-red-50 hover:bg-red-100 border-red-200 text-red-600'
                                     : 'bg-red-950/30 hover:bg-red-900/60 border-red-900/50 text-red-400'
                                 }`}
-                                title={confirmDeleteId === task.id ? 'Click again to confirm' : 'Delete Task'}
+                                title="Delete Task"
                               >
-                                {confirmDeleteId === task.id ? (
-                                  <span className="text-[10px] font-black uppercase whitespace-nowrap">
-                                    Confirm?
-                                  </span>
-                                ) : (
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                )}
+                                <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
                           </div>
@@ -928,6 +1011,112 @@ export const TaskManagementModal: React.FC<TaskManagementModalProps> = ({
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Strict Delete Single Task Confirmation Modal */}
+          {taskPendingDelete && (
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Confirm Task Deletion"
+              onClick={(e) => e.stopPropagation()}
+              className="fixed inset-0 z-[120] bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-150 backdrop-blur-sm"
+            >
+              <div className="max-w-md w-full bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white border-4 border-red-600 shadow-2xl p-5 space-y-4 rounded-xs">
+                <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-2.5">
+                  <div className="flex items-center gap-2 text-red-600 dark:text-red-500">
+                    <AlertTriangle className="w-5 h-5 stroke-[2.5]" />
+                    <h3 className="text-sm font-black uppercase tracking-wider">
+                      Confirm Permanent Deletion
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setTaskPendingDelete(null)}
+                    className="p-1 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <p className="text-xs sm:text-sm font-bold leading-relaxed">
+                  Are you sure you want to delete <span className="text-red-600 dark:text-red-400 font-black">"{taskPendingDelete.title}"</span>? This action cannot be undone.
+                </p>
+
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-zinc-800">
+                  <button
+                    type="button"
+                    onClick={() => setTaskPendingDelete(null)}
+                    className="px-3.5 py-2 text-xs font-black uppercase tracking-wider rounded-xs bg-zinc-200 hover:bg-zinc-300 text-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-200 cursor-pointer transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const targetId = taskPendingDelete.id;
+                      setTaskPendingDelete(null);
+                      onDeleteTask(targetId);
+                    }}
+                    className="px-4 py-2 text-xs font-black uppercase tracking-wider rounded-xs bg-red-600 hover:bg-red-500 text-white flex items-center gap-1.5 cursor-pointer shadow-md transition"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Yes, Permanently Delete</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Strict Bulk Delete Tasks Confirmation Modal */}
+          {confirmBulkDelete && selectedTaskIds.length > 0 && (
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Confirm Bulk Task Deletion"
+              onClick={(e) => e.stopPropagation()}
+              className="fixed inset-0 z-[120] bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-150 backdrop-blur-sm"
+            >
+              <div className="max-w-md w-full bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white border-4 border-red-600 shadow-2xl p-5 space-y-4 rounded-xs">
+                <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-2.5">
+                  <div className="flex items-center gap-2 text-red-600 dark:text-red-500">
+                    <AlertTriangle className="w-5 h-5 stroke-[2.5]" />
+                    <h3 className="text-sm font-black uppercase tracking-wider">
+                      Confirm Permanent Deletion
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmBulkDelete(false)}
+                    className="p-1 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <p className="text-xs sm:text-sm font-bold leading-relaxed">
+                  Are you sure you want to delete <span className="text-red-600 dark:text-red-400 font-black">{selectedTaskIds.length} selected task(s)</span>? This action cannot be undone.
+                </p>
+
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-zinc-800">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmBulkDelete(false)}
+                    className="px-3.5 py-2 text-xs font-black uppercase tracking-wider rounded-xs bg-zinc-200 hover:bg-zinc-300 text-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-200 cursor-pointer transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExecuteBulkDelete}
+                    className="px-4 py-2 text-xs font-black uppercase tracking-wider rounded-xs bg-red-600 hover:bg-red-500 text-white flex items-center gap-1.5 cursor-pointer shadow-md transition"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Yes, Permanently Delete</span>
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </motion.div>

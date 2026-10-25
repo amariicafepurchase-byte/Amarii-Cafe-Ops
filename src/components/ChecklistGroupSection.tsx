@@ -45,7 +45,7 @@ interface ChecklistGroupSectionProps {
   onEditTask?: (task: TaskItem) => void;
   onDeleteTask?: (taskId: string) => void;
   onUnpackSubTasks?: (taskId: string) => void;
-  onDeleteChecklist?: (headerName: string) => void;
+  onDeleteChecklist?: (headerName: string) => Promise<void> | void;
   onEditChecklist?: (headerName: string) => void;
   onUpgradeChecklist?: (headerName: string) => void;
   onRenameChecklist?: (oldHeader: string, newHeader: string) => void;
@@ -97,6 +97,7 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
   const { isAdmin, isStaff, currentUser } = useAuth();
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
   const [confirmDeleteChecklist, setConfirmDeleteChecklist] = useState<boolean>(false);
+  const [isDeletingChecklist, setIsDeletingChecklist] = useState<boolean>(false);
   const [isRenaming, setIsRenaming] = useState<boolean>(false);
   const [renameDraft, setRenameDraft] = useState<string>(resolvedHeaderName);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -195,6 +196,31 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
       setTimeout(() => setShareNotice(null), 4000);
     } finally {
       setIsGeneratingPdf(false);
+    }
+  };
+
+  const handleExecuteDeleteChecklist = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!onDeleteChecklist || isDeletingChecklist) return;
+
+    setIsDeletingChecklist(true);
+    let timeoutId: any;
+    const timeoutPromise = new Promise((resolve) => {
+      timeoutId = setTimeout(() => resolve('TIMED_OUT'), 3000);
+    });
+
+    try {
+      await Promise.race([
+        Promise.resolve(onDeleteChecklist(resolvedHeaderName)),
+        timeoutPromise,
+      ]);
+    } catch (err) {
+      console.error('Error deleting checklist:', err);
+    } finally {
+      clearTimeout(timeoutId);
+      setIsDeletingChecklist(false);
+      setConfirmDeleteChecklist(false);
     }
   };
 
@@ -382,11 +408,14 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
             </div>
 
             {/* Admin Controls & Section Toggle */}
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
               {isAdmin && !isStaff && onAddTaskToHeader && (
                 <button
                   type="button"
-                  onClick={() => onAddTaskToHeader(resolvedHeaderName)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAddTaskToHeader(resolvedHeaderName);
+                  }}
                   className="px-2.5 py-1 text-xs font-semibold bg-zinc-100 hover:bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200 rounded cursor-pointer transition flex items-center gap-1"
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -397,7 +426,10 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
               {isAdmin && !isStaff && onEditChecklist && (
                 <button
                   type="button"
-                  onClick={() => onEditChecklist(resolvedHeaderName)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEditChecklist(resolvedHeaderName);
+                  }}
                   className="px-2.5 py-1 text-xs font-bold bg-[#673ab7] hover:bg-[#58309e] text-white rounded cursor-pointer transition flex items-center gap-1.5 shadow-xs"
                   title="Edit full checklist and all questions"
                 >
@@ -406,32 +438,42 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
                 </button>
               )}
 
-              {isAdmin && !isStaff && onDeleteChecklist && (
+              {onDeleteChecklist && (
                 <button
                   type="button"
-                  onClick={() => {
-                    if (confirmDeleteChecklist) {
-                      onDeleteChecklist(resolvedHeaderName);
-                      setConfirmDeleteChecklist(false);
-                    } else {
-                      setConfirmDeleteChecklist(true);
-                      setTimeout(() => setConfirmDeleteChecklist(false), 4000);
-                    }
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setConfirmDeleteChecklist((prev) => !prev);
                   }}
-                  className={`p-1.5 rounded cursor-pointer text-xs font-bold transition ${
+                  disabled={isDeletingChecklist}
+                  className={`px-2.5 py-1 rounded cursor-pointer text-xs font-black uppercase tracking-tight transition flex items-center gap-1.5 border ${
                     confirmDeleteChecklist
-                      ? 'bg-red-600 text-white'
-                      : 'text-zinc-400 hover:text-red-500'
+                      ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                      : 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200 dark:bg-red-950/40 dark:hover:bg-red-900/60 dark:text-red-400 dark:border-red-900/60'
                   }`}
-                  title={confirmDeleteChecklist ? 'Click again to confirm delete' : 'Delete checklist'}
+                  title="Delete entire checklist and all its associated tasks"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  {isDeletingChecklist ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Deleting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>[DELETE CHECKLIST]</span>
+                    </>
+                  )}
                 </button>
               )}
 
               <button
                 type="button"
-                onClick={() => setIsExpanded(!isExpanded)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsExpanded(!isExpanded);
+                }}
                 className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-white rounded cursor-pointer"
                 aria-label={isExpanded ? 'Collapse' : 'Expand'}
               >
@@ -439,6 +481,70 @@ export const ChecklistGroupSection: React.FC<ChecklistGroupSectionProps> = ({
               </button>
             </div>
           </div>
+
+          {/* Strict Delete Checklist Confirmation Modal */}
+          {confirmDeleteChecklist && onDeleteChecklist && (
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Confirm Checklist Deletion"
+              onClick={(e) => e.stopPropagation()}
+              className="fixed inset-0 z-70 bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-150 backdrop-blur-sm"
+            >
+              <div className="max-w-md w-full bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white border-4 border-red-600 shadow-2xl p-5 space-y-4 rounded-xs">
+                <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-2.5">
+                  <div className="flex items-center gap-2 text-red-600 dark:text-red-500">
+                    <AlertCircle className="w-5 h-5 stroke-[2.5]" />
+                    <h3 className="text-sm font-black uppercase tracking-wider">
+                      Confirm Permanent Deletion
+                    </h3>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-xs sm:text-sm font-bold leading-relaxed">
+                    Are you sure you want to delete <span className="text-red-600 dark:text-red-400 font-black">"{resolvedHeaderName}"</span>? This action cannot be undone.
+                  </p>
+                  <p className="text-[11px] text-zinc-600 dark:text-zinc-400 font-medium">
+                    All {totalCount} associated {totalCount === 1 ? 'task' : 'tasks'} in this checklist will be permanently removed.
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-zinc-800">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setConfirmDeleteChecklist(false);
+                    }}
+                    disabled={isDeletingChecklist}
+                    className="px-3.5 py-2 text-xs font-black uppercase tracking-wider rounded-xs bg-zinc-200 hover:bg-zinc-300 text-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-200 cursor-pointer transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExecuteDeleteChecklist}
+                    disabled={isDeletingChecklist}
+                    className="px-4 py-2 text-xs font-black uppercase tracking-wider rounded-xs bg-red-600 hover:bg-red-500 text-white flex items-center gap-1.5 cursor-pointer shadow-md transition disabled:opacity-60"
+                  >
+                    {isDeletingChecklist ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Deleting...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Yes, Permanently Delete</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* User Responder & Required Question Legend Bar */}
           <div className="pt-2.5 border-t border-zinc-100 dark:border-zinc-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">

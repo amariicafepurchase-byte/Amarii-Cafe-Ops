@@ -6,30 +6,63 @@ import {
   setDoc,
   getDoc,
   getDocFromServer,
-  updateDoc,
   deleteDoc,
   onSnapshot,
   getDocs,
   writeBatch,
   Firestore,
+  setLogLevel,
+  disableNetwork,
 } from 'firebase/firestore';
 import firebaseConfigData from '../../firebase-applet-config.json';
 import { TaskItem, StaffMember, ShiftRecord, Outlet, INITIAL_OUTLETS, DEFAULT_OUTLET } from '../types';
 import { INITIAL_STAFF } from '../data/staffData';
 import { INITIAL_DAILY_TASKS } from '../data/defaultTasks';
 
-const firebaseConfig = {
+import {
+  staffRepository,
+  tasksRepository,
+  submissionsRepository,
+  outletsRepository,
+  dispatchCloudMutation,
+  flushPendingSyncQueue,
+  validateFirebaseCredentials,
+  getRepository,
+  PENDING_SYNC_QUEUE_KEY,
+} from './syncService';
+
+export {
+  staffRepository,
+  tasksRepository,
+  submissionsRepository,
+  outletsRepository,
+  dispatchCloudMutation,
+  flushPendingSyncQueue,
+  validateFirebaseCredentials,
+  getRepository,
+  PENDING_SYNC_QUEUE_KEY,
+};
+
+// Silence internal @firebase/firestore WebChannel / RPC console error floods when offline
+try {
+  setLogLevel('silent');
+} catch {
+  // Ignore if unsupported in environment
+}
+
+export const firebaseConfig = {
   apiKey: firebaseConfigData.apiKey,
   authDomain: firebaseConfigData.authDomain,
   projectId: firebaseConfigData.projectId,
   storageBucket: firebaseConfigData.storageBucket,
   messagingSenderId: firebaseConfigData.messagingSenderId,
   appId: firebaseConfigData.appId,
+  firestoreDatabaseId: (firebaseConfigData as any).firestoreDatabaseId || '(default)',
 };
 
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Initialize Firestore with specific database ID if provided
+// Initialize Firestore with the provisioned database ID from firebase-applet-config.json
 export const db: Firestore = (firebaseConfigData as any).firestoreDatabaseId
   ? getFirestore(app, (firebaseConfigData as any).firestoreDatabaseId)
   : getFirestore(app);
@@ -40,237 +73,27 @@ export const USERS_COLLECTION = 'users';
 const SHIFTS_COLLECTION = 'shifts';
 const OUTLETS_COLLECTION = 'outlets';
 
-// Test connection to Firestore directly from server
-export interface FirestoreConnectionDiagnostic {
-  connected: boolean;
-  latencyMs: number;
-  databaseId: string;
-  projectId: string;
-  error?: string;
-  timestamp: string;
-}
+// ============================================================================
+// AUTHORITATIVE LOCALSTORAGE KEYS (V3) & DISASTER BACKUP SHIELD
+// ============================================================================
+export const STORAGE_KEY_STAFF_V3 = 'amarii_staff_list_v3';
+export const STORAGE_KEY_TASKS_V3 = 'amarii_tasks_master_v3';
+export const STORAGE_KEY_SUBMISSIONS_V3 = 'amarii_submissions_v3';
+export const STORAGE_KEY_DISASTER_BACKUP = 'amarii_disaster_backup';
 
-export async function testFirestoreConnection(): Promise<FirestoreConnectionDiagnostic> {
-  const start = Date.now();
-  try {
-    const testDocRef = doc(db, 'system_meta', 'seed_state');
-    await getDocFromServer(testDocRef);
-    const latencyMs = Date.now() - start;
-    console.log(`[Firestore Connection] Cloud test succeeded in ${latencyMs}ms`);
-    return {
-      connected: true,
-      latencyMs,
-      databaseId: (firebaseConfigData as any).firestoreDatabaseId || '(default)',
-      projectId: firebaseConfigData.projectId,
-      timestamp: new Date().toISOString(),
-    };
-  } catch (error: any) {
-    const latencyMs = Date.now() - start;
-    if (error?.code === 'not-found' || error?.message?.includes('not exist')) {
-      console.log(`[Firestore Connection] Server reachable (doc not found) in ${latencyMs}ms`);
-      return {
-        connected: true,
-        latencyMs,
-        databaseId: (firebaseConfigData as any).firestoreDatabaseId || '(default)',
-        projectId: firebaseConfigData.projectId,
-        timestamp: new Date().toISOString(),
-      };
-    }
-    console.warn(`[Firestore Connection] Probe error (${latencyMs}ms):`, error?.message || error);
-    return {
-      connected: false,
-      latencyMs,
-      databaseId: (firebaseConfigData as any).firestoreDatabaseId || '(default)',
-      projectId: firebaseConfigData.projectId,
-      error: error instanceof Error ? error.message : String(error),
-      timestamp: new Date().toISOString(),
-    };
-  }
-}
+// Legacy & auxiliary keys kept in sync for 100% backward compatibility
+export const STORAGE_KEY_TASKS_MASTER_CACHE = 'amarii_tasks_master_cache';
+export const STORAGE_KEY_DELETED_TASK_IDS = 'amarii_deleted_task_ids_v2';
+export const STORAGE_KEY_DELETED_CHECKLIST_IDS = 'amarii_deleted_checklist_ids';
+export const STORAGE_KEY_DELETED_CHECKLIST_TITLES = 'amarii_deleted_checklist_titles';
+export const STORAGE_KEY_DELETED_CHECKLIST_HEADERS = 'amarii_deleted_checklist_headers';
+export const STORAGE_KEY_DELETED_STAFF_IDS = 'amarii_deleted_staff_ids_v2';
+export const STORAGE_KEY_DELETED_SHIFT_IDS = 'amarii_deleted_shift_ids_v3';
 
-// List of legacy demo outlets to purge
-export const LEGACY_DEMO_OUTLET_IDS = [
-  'outlet-main-street',
-  'outlet-airport-lounge',
-  'outlet-mall-kiosk',
-];
-
-// Subscribe to real-time Outlets in Firestore
-export function subscribeToOutlets(onUpdate: (outlets: Outlet[], fromCache?: boolean) => void, onError?: (err: Error) => void) {
-  const outletsRef = collection(db, OUTLETS_COLLECTION);
-  return onSnapshot(
-    outletsRef,
-    (snapshot) => {
-      const items: Outlet[] = [];
-      snapshot.forEach((d) => {
-        const data = d.data() as Omit<Outlet, 'id'>;
-        const name = (data.name || '').toLowerCase();
-        const isLegacy =
-          LEGACY_DEMO_OUTLET_IDS.includes(d.id) ||
-          name.includes('main street') ||
-          name.includes('airport') ||
-          name.includes('mall kiosk');
-        if (!isLegacy) {
-          items.push({ id: d.id, ...data });
-        }
-      });
-      if (items.length === 0) {
-        onUpdate(INITIAL_OUTLETS, snapshot.metadata.fromCache);
-      } else {
-        onUpdate(items, snapshot.metadata.fromCache);
-      }
-    },
-    (err) => {
-      console.warn('[Firestore] Outlets listener note (falling back to cache/defaults):', err.message);
-      try {
-        const cached = localStorage.getItem('amarii_outlets_cache');
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            onUpdate(parsed, true);
-            if (onError) onError(err);
-            return;
-          }
-        }
-      } catch (e) {}
-      onUpdate(INITIAL_OUTLETS, true);
-      if (onError) onError(err);
-    }
-  );
-}
-
-// Subscribe to real-time Tasks in Firestore
-export function subscribeToTasks(onUpdate: (tasks: TaskItem[], fromCache?: boolean) => void, onError?: (err: Error) => void) {
-  const tasksRef = collection(db, TASKS_COLLECTION);
-  return onSnapshot(
-    tasksRef,
-    (snapshot) => {
-      console.log(
-        `[Firestore DEBUG] subscribeToTasks received snapshot: ${snapshot.size} docs (fromCache: ${snapshot.metadata.fromCache}, hasPendingWrites: ${snapshot.metadata.hasPendingWrites})`
-      );
-      const items: TaskItem[] = [];
-      const deletedIds = getDeletedTaskIds();
-      snapshot.forEach((d) => {
-        if (!deletedIds.has(d.id)) {
-          items.push({ id: d.id, ...(d.data() as Omit<TaskItem, 'id'>) });
-        }
-      });
-      onUpdate(items, snapshot.metadata.fromCache);
-      try {
-        localStorage.setItem('amarii_tasks_cache', JSON.stringify(items));
-      } catch (e) {}
-    },
-    (err) => {
-      console.warn('[Firestore DEBUG] Tasks listener note (falling back to local cache/defaults):', err.message);
-      try {
-        const cached = localStorage.getItem('amarii_tasks_cache');
-        const deletedIds = getDeletedTaskIds();
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            const filtered = parsed.filter((t: any) => t && t.id && !deletedIds.has(t.id));
-            if (filtered.length > 0) {
-              onUpdate(filtered, true);
-              if (onError) onError(err);
-              return;
-            }
-          }
-        }
-      } catch (e) {}
-      onUpdate(INITIAL_DAILY_TASKS, true);
-      if (onError) onError(err);
-    }
-  );
-}
-
-// Fetch Tasks Once (useful for manual refresh or pull-to-refresh)
-export async function fetchTasksOnce(): Promise<TaskItem[]> {
-  try {
-    const tasksRef = collection(db, TASKS_COLLECTION);
-    const snapshot = await getDocs(tasksRef);
-    const items: TaskItem[] = [];
-    const deletedIds = getDeletedTaskIds();
-    snapshot.forEach((d) => {
-      if (!deletedIds.has(d.id)) {
-        items.push({ id: d.id, ...(d.data() as Omit<TaskItem, 'id'>) });
-      }
-    });
-    if (items.length > 0) {
-      try {
-        localStorage.setItem('amarii_tasks_cache', JSON.stringify(items));
-      } catch (e) {}
-      return items;
-    }
-  } catch (err) {
-    console.warn('Error fetching tasks from Firestore (falling back to cache/defaults):', err);
-  }
-
-  try {
-    const cached = localStorage.getItem('amarii_tasks_cache');
-    if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
-      }
-    }
-  } catch (e) {}
-
-  return INITIAL_DAILY_TASKS;
-}
-
-// Fetch Staff Once (useful for pull-to-refresh or explicit sync)
-export async function fetchStaffOnce(): Promise<StaffMember[]> {
-  try {
-    const staffRef = collection(db, STAFF_COLLECTION);
-    const snapshot = await getDocs(staffRef);
-
-    const items: StaffMember[] = [];
-    snapshot.forEach((d) => {
-      const data = d.data() as Omit<StaffMember, 'id'>;
-      const staffId = d.id;
-      const staffName = (data.name || '').toLowerCase();
-      const isArjun = staffName.includes('arjun') || staffId === 'staff-admin-arjun';
-      const isLegacyId = LEGACY_DEMO_STAFF_IDS.includes(staffId);
-
-      if (!isArjun && !isLegacyId) {
-        items.push({ id: staffId, ...data });
-      }
-    });
-
-    if (items.length > 0) {
-      try {
-        localStorage.setItem('amarii_staff_list_cache', JSON.stringify(items));
-      } catch (e) {}
-      return items;
-    }
-  } catch (err) {
-    console.warn('Error fetching staff from Firestore (falling back to cache/defaults):', err);
-  }
-
-  try {
-    const cached = localStorage.getItem('amarii_staff_list_cache');
-    if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
-      }
-    }
-  } catch (e) {}
-
-  return INITIAL_STAFF;
-}
-
-// List of dummy / legacy staff IDs to ignore and permanently purge
+// List of dummy / legacy staff IDs to ignore
 export const LEGACY_DEMO_STAFF_IDS = [
   'staff-1790256036455-md1v',
   'staff-admin-arjun',
-  'staff-mgr-anand-verma',
-  'staff-mgr-kunal-sen',
-  'staff-cook-manoj-kumar',
-  'staff-barista-riya-roy',
-  'staff-cashier-vikas-mehta',
-  'staff-service-priya-verma',
-  'staff-hk-ramesh-das',
   'user-mgr-kitchen',
   'user-mgr-bar',
   'user-staff-kitchen',
@@ -285,158 +108,267 @@ export const LEGACY_DEMO_STAFF_IDS = [
   'staff-bl1', 'staff-bl2',
 ];
 
-// Subscribe to Staff in Firestore
-export function subscribeToStaff(onUpdate: (staff: StaffMember[], fromCache?: boolean) => void, onError?: (err: Error) => void) {
-  const staffRef = collection(db, STAFF_COLLECTION);
-  return onSnapshot(
-    staffRef,
-    (snapshot) => {
-      console.log(
-        `[Firestore DEBUG] subscribeToStaff received snapshot: ${snapshot.size} docs (fromCache: ${snapshot.metadata.fromCache}, hasPendingWrites: ${snapshot.metadata.hasPendingWrites})`
-      );
-      const items: StaffMember[] = [];
-      snapshot.forEach((d) => {
-        const data = d.data() as Omit<StaffMember, 'id'>;
-        const staffId = d.id;
-        const staffName = (data.name || '').toLowerCase();
-        const isArjun = staffName.includes('arjun') || staffId === 'staff-admin-arjun';
+export const LEGACY_DEMO_OUTLET_IDS = [
+  'outlet-main-street',
+  'outlet-airport-lounge',
+  'outlet-mall-kiosk',
+];
 
-        if (isArjun) {
-          // Filter out legacy demo staff in-memory without calling deleteDoc inside snapshot
-          return;
+// ============================================================================
+// CREDENTIAL & DATABASE CONFIGURATION GUARD
+// ============================================================================
+let firestoreDisabled = false;
+
+export function isFirestoreDisabled(): boolean {
+  return firestoreDisabled;
+}
+
+function isPermanentDatabaseMissingError(err: any): boolean {
+  if (!err) return false;
+  const msg = String(err?.message || err || '').toLowerCase();
+  return (
+    msg.includes("database '(default)' not found") ||
+    msg.includes('database (default) not found') ||
+    (msg.includes('database') && msg.includes('not found'))
+  );
+}
+
+function tripFirestoreCircuitBreaker(): void {
+  if (firestoreDisabled) return;
+  firestoreDisabled = true;
+  try {
+    disableNetwork(db).catch(() => {});
+  } catch {
+    // Ignore
+  }
+}
+
+// Helper to run any Firestore promise with a safe timeout (default 2500ms) and silent catch
+async function withFirestoreSafeTimeout<T>(
+  operation: () => Promise<T>,
+  timeoutMs = 2500,
+  fallbackValue?: T
+): Promise<{ ok: boolean; value?: T; timedOut?: boolean; error?: string }> {
+  if (firestoreDisabled) {
+    return { ok: false, value: fallbackValue, error: 'Local storage mode active' };
+  }
+
+  let timer: any;
+  const timeoutPromise = new Promise<{ ok: false; timedOut: true }>((resolve) => {
+    timer = setTimeout(() => resolve({ ok: false, timedOut: true }), timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([
+      operation().then((value) => ({ ok: true as const, value })),
+      timeoutPromise,
+    ]);
+    if (!result.ok) {
+      return { ok: false, value: fallbackValue, timedOut: true, error: 'Firestore request timed out' };
+    }
+    return result;
+  } catch (err: any) {
+    if (isPermanentDatabaseMissingError(err)) {
+      tripFirestoreCircuitBreaker();
+    }
+    return {
+      ok: false,
+      value: fallbackValue,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function ensureFirestoreAvailable(): Promise<boolean> {
+  if (firestoreDisabled) return false;
+  const creds = validateFirebaseCredentials();
+  return creds.isValid;
+}
+
+// ============================================================================
+// DISASTER BACKUP & AUTHORITATIVE LOCALSTORAGE HELPERS
+// ============================================================================
+export interface DisasterBackupPayload {
+  staffList: StaffMember[];
+  tasks: TaskItem[];
+  submissions: ShiftRecord[];
+  updatedAt: string;
+}
+
+export function readDisasterBackup(): Partial<DisasterBackupPayload> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_DISASTER_BACKUP);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function updateDisasterBackup(partial: {
+  staffList?: StaffMember[];
+  tasks?: TaskItem[];
+  submissions?: ShiftRecord[];
+}): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const current = readDisasterBackup();
+    const nextStaff =
+      partial.staffList !== undefined
+        ? partial.staffList.length > 0
+          ? partial.staffList
+          : current.staffList || []
+        : current.staffList || [];
+    const nextTasks =
+      partial.tasks !== undefined
+        ? partial.tasks.length > 0
+          ? partial.tasks
+          : current.tasks || []
+        : current.tasks || [];
+    const nextSubmissions =
+      partial.submissions !== undefined
+        ? partial.submissions.length > 0
+          ? partial.submissions
+          : current.submissions || []
+        : current.submissions || [];
+
+    const payload: DisasterBackupPayload = {
+      staffList: nextStaff,
+      tasks: nextTasks,
+      submissions: nextSubmissions,
+      updatedAt: new Date().toISOString(),
+    };
+    localStorage.setItem(STORAGE_KEY_DISASTER_BACKUP, JSON.stringify(payload));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export const getDeletedStaffIds = (): Set<string> => {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_DELETED_STAFF_IDS);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+};
+
+export const addDeletedStaffIds = (ids: string[]) => {
+  if (!ids || ids.length === 0 || typeof window === 'undefined') return;
+  try {
+    const current = getDeletedStaffIds();
+    ids.forEach((id) => {
+      if (id) current.add(id);
+    });
+    localStorage.setItem(STORAGE_KEY_DELETED_STAFF_IDS, JSON.stringify(Array.from(current)));
+  } catch {}
+};
+
+export const removeDeletedStaffIds = (ids: string[]) => {
+  if (!ids || ids.length === 0 || typeof window === 'undefined') return;
+  try {
+    const current = getDeletedStaffIds();
+    ids.forEach((id) => {
+      if (id) current.delete(id);
+    });
+    localStorage.setItem(STORAGE_KEY_DELETED_STAFF_IDS, JSON.stringify(Array.from(current)));
+  } catch {}
+};
+
+export const getDeletedShiftIds = (): Set<string> => {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_DELETED_SHIFT_IDS);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+};
+
+export const addDeletedShiftIds = (ids: string[]) => {
+  if (!ids || ids.length === 0 || typeof window === 'undefined') return;
+  try {
+    const current = getDeletedShiftIds();
+    ids.forEach((id) => {
+      if (id) current.add(id);
+    });
+    localStorage.setItem(STORAGE_KEY_DELETED_SHIFT_IDS, JSON.stringify(Array.from(current)));
+  } catch {}
+};
+
+export const toChecklistSlugId = (titleOrId: string): string => {
+  return (titleOrId || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+};
+
+export const getDeletedChecklistTitles = (): Set<string> => {
+  if (typeof window === 'undefined') return new Set();
+  const result = new Set<string>();
+  const keys = [STORAGE_KEY_DELETED_CHECKLIST_TITLES, STORAGE_KEY_DELETED_CHECKLIST_HEADERS];
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((item: any) => {
+            if (typeof item === 'string' && item.trim()) {
+              result.add(item.trim());
+            }
+          });
         }
-
-        const isLegacyId = LEGACY_DEMO_STAFF_IDS.includes(staffId);
-        if (!isLegacyId) {
-          items.push({ id: staffId, ...data });
-        }
-      });
-
-      if (items.length === 0) {
-        onUpdate(INITIAL_STAFF, snapshot.metadata.fromCache);
-      } else {
-        // Use the actual live staff directly from Firestore
-        onUpdate(items, snapshot.metadata.fromCache);
-        try {
-          localStorage.setItem('amarii_staff_list_cache', JSON.stringify(items));
-        } catch (e) {}
       }
-    },
-    (err) => {
-      console.warn('[Firestore DEBUG] Staff listener note (falling back to local cache/defaults):', err.message);
-      try {
-        const cached = localStorage.getItem('amarii_staff_list_cache');
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            onUpdate(parsed, true);
-            if (onError) onError(err);
-            return;
-          }
-        }
-      } catch (e) {}
-      onUpdate(INITIAL_STAFF, true);
-      if (onError) onError(err);
-    }
-  );
-}
-
-// Subscribe to Shifts in Firestore
-export function subscribeToShifts(onUpdate: (shifts: ShiftRecord[]) => void, onError?: (err: Error) => void) {
-  const shiftsRef = collection(db, SHIFTS_COLLECTION);
-  return onSnapshot(
-    shiftsRef,
-    (snapshot) => {
-      const items: ShiftRecord[] = [];
-      snapshot.forEach((d) => {
-        items.push({ id: d.id, ...(d.data() as Omit<ShiftRecord, 'id'>) });
-      });
-      items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      onUpdate(items);
-      try {
-        if (items.length > 0) {
-          localStorage.setItem('amarii_shift_history_cache', JSON.stringify(items));
-        }
-      } catch (e) {}
-    },
-    (err) => {
-      console.warn('[Firestore] Shifts listener note (falling back to local cache):', err.message);
-      try {
-        const cached = localStorage.getItem('amarii_shift_history_cache');
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            onUpdate(parsed);
-          }
-        }
-      } catch (e) {}
-      if (onError) onError(err);
-    }
-  );
-}
-
-// Recursively strip undefined properties from an object so Firestore never throws
-// "Unsupported field value: undefined".
-export function sanitizeForFirestore<T extends Record<string, any>>(obj: T): Record<string, any> {
-  if (obj === null || obj === undefined || typeof obj !== 'object') {
-    return obj;
-  }
-
-  if (Array.isArray(obj)) {
-    return obj
-      .filter((item) => item !== undefined)
-      .map((item) => (item !== null && typeof item === 'object' ? sanitizeForFirestore(item) : item));
-  }
-
-  const result: Record<string, any> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    if (value === undefined) {
-      continue; // Skip undefined to satisfy Firestore validation
-    } else if (value !== null && typeof value === 'object') {
-      result[key] = sanitizeForFirestore(value);
-    } else {
-      result[key] = value;
-    }
+    } catch {}
   }
   return result;
-}
+};
 
-// Save or Update a single task
-export async function saveTaskToFirebase(task: TaskItem): Promise<void> {
-  if (!task || !task.id) return;
-  const taskRef = doc(db, TASKS_COLLECTION, task.id);
-  const dataToSave = sanitizeForFirestore({
-    ...task,
-    updatedAt: new Date().toISOString(),
+export const getDeletedChecklistIds = (): Set<string> => {
+  if (typeof window === 'undefined') return new Set();
+  const result = new Set<string>();
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_DELETED_CHECKLIST_IDS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((item: any) => {
+          if (typeof item === 'string' && item.trim()) {
+            result.add(item.trim());
+            result.add(toChecklistSlugId(item));
+          }
+        });
+      }
+    }
+  } catch {}
+  getDeletedChecklistTitles().forEach((title) => {
+    const slug = toChecklistSlugId(title);
+    if (slug) result.add(slug);
   });
-  await setDoc(taskRef, dataToSave, { merge: true });
-}
+  return result;
+};
 
-// Batch save multiple tasks (safely sanitized and chunked under the 500 batch limit)
-export async function batchSaveTasksToFirebase(tasks: TaskItem[]): Promise<void> {
-  if (!tasks || tasks.length === 0) return;
-  const BATCH_SIZE = 400;
-
-  for (let i = 0; i < tasks.length; i += BATCH_SIZE) {
-    const chunk = tasks.slice(i, i + BATCH_SIZE);
-    const batch = writeBatch(db);
-
-    chunk.forEach((t) => {
-      if (!t || !t.id) return;
-      const taskRef = doc(db, TASKS_COLLECTION, t.id);
-      const dataToSave = sanitizeForFirestore({
-        ...t,
-        updatedAt: new Date().toISOString(),
-      });
-      batch.set(taskRef, dataToSave, { merge: true });
-    });
-
-    await batch.commit();
+export const isChecklistDeleted = (headerOrId?: string | null): boolean => {
+  if (!headerOrId || typeof headerOrId !== 'string') return false;
+  const trimmed = headerOrId.trim();
+  if (!trimmed) return false;
+  const titles = getDeletedChecklistTitles();
+  if (titles.has(trimmed)) return true;
+  const lower = trimmed.toLowerCase();
+  for (const t of titles) {
+    if (t.toLowerCase() === lower) return true;
   }
-}
-
-// Storage keys for deleted tasks tracking
-export const STORAGE_KEY_DELETED_TASK_IDS = 'amarii_deleted_task_ids_v2';
+  const slug = toChecklistSlugId(trimmed);
+  if (slug && getDeletedChecklistIds().has(slug)) return true;
+  return false;
+};
 
 export const getDeletedTaskIds = (): Set<string> => {
   if (typeof window === 'undefined') return new Set();
@@ -456,7 +388,7 @@ export const addDeletedTaskIds = (ids: string[]) => {
       if (id) current.add(id);
     });
     localStorage.setItem(STORAGE_KEY_DELETED_TASK_IDS, JSON.stringify(Array.from(current)));
-  } catch (e) {}
+  } catch {}
 };
 
 export const removeDeletedTaskIds = (ids: string[]) => {
@@ -467,39 +399,659 @@ export const removeDeletedTaskIds = (ids: string[]) => {
       if (id) current.delete(id);
     });
     localStorage.setItem(STORAGE_KEY_DELETED_TASK_IDS, JSON.stringify(Array.from(current)));
-  } catch (e) {}
+  } catch {}
 };
 
-// Clean deleted tasks from ALL localStorage caches and offline queues immediately
-export function removeTasksFromLocalCache(taskIds: string[]) {
-  if (!taskIds || taskIds.length === 0 || typeof window === 'undefined') return;
-  const idSet = new Set(taskIds);
+export const isTaskBlacklisted = (task?: Partial<TaskItem> | null): boolean => {
+  if (!task || !task.id) return true;
+  const deletedTaskIds = getDeletedTaskIds();
+  if (deletedTaskIds.has(task.id)) return true;
+  if (task.checklistHeader && isChecklistDeleted(task.checklistHeader)) return true;
+  if (task.title && isChecklistDeleted(task.title)) return true;
+  return false;
+};
 
-  // 1. amarii_tasks_cache
-  try {
-    const raw = localStorage.getItem('amarii_tasks_cache');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        const filtered = parsed.filter((t: any) => t && t.id && !idSet.has(t.id));
-        localStorage.setItem('amarii_tasks_cache', JSON.stringify(filtered));
+// Load authoritative Staff list from localStorage (v3 first, then legacy caches, then disaster backup)
+export function loadLocalStaff(): StaffMember[] {
+  if (typeof window === 'undefined') return [];
+  const deletedStaffIds = getDeletedStaffIds();
+  const keys = [STORAGE_KEY_STAFF_V3, 'amarii_staff_list_cache', 'amarii_staff_backup'];
+
+  const filterValidStaff = (arr: any[]): StaffMember[] => {
+    const seen = new Set<string>();
+    const result: StaffMember[] = [];
+    for (const s of arr) {
+      if (
+        s &&
+        typeof s === 'object' &&
+        typeof s.id === 'string' &&
+        s.id &&
+        !seen.has(s.id) &&
+        !deletedStaffIds.has(s.id) &&
+        !LEGACY_DEMO_STAFF_IDS.includes(s.id) &&
+        !String(s.name || '').toLowerCase().includes('arjun')
+      ) {
+        seen.add(s.id);
+        result.push(s as StaffMember);
       }
     }
-  } catch (e) {}
+    return result;
+  };
 
-  // 2. amarii_offline_tasks_cache_v1
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const valid = filterValidStaff(parsed);
+          if (valid.length > 0) {
+            return valid;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // Fallback to disaster backup if primary keys were cleared
+  const backup = readDisasterBackup();
+  if (Array.isArray(backup.staffList) && backup.staffList.length > 0) {
+    const recovered = filterValidStaff(backup.staffList);
+    if (recovered.length > 0) {
+      try {
+        localStorage.setItem(STORAGE_KEY_STAFF_V3, JSON.stringify(recovered));
+        localStorage.setItem('amarii_staff_list_cache', JSON.stringify(recovered));
+        localStorage.setItem('amarii_staff_backup', JSON.stringify(recovered));
+      } catch {}
+      return recovered;
+    }
+  }
+
+  return [];
+}
+
+// Save authoritative Staff list to localStorage FIRST + rolling disaster backup
+export function saveLocalStaff(staffList: StaffMember[], allowEmpty = false): StaffMember[] {
+  if (typeof window === 'undefined') return staffList || [];
+  const deletedStaffIds = getDeletedStaffIds();
+  const seen = new Set<string>();
+  const clean = (staffList || []).filter((s) => {
+    if (
+      !s ||
+      !s.id ||
+      seen.has(s.id) ||
+      deletedStaffIds.has(s.id) ||
+      LEGACY_DEMO_STAFF_IDS.includes(s.id) ||
+      String(s.name || '').toLowerCase().includes('arjun')
+    ) {
+      return false;
+    }
+    seen.add(s.id);
+    return true;
+  });
+
+  // DATA PRESERVATION SHIELD: Never allow an accidental empty array to wipe existing records
+  if (clean.length === 0 && !allowEmpty) {
+    const existing = loadLocalStaff();
+    if (existing.length > 0) {
+      return existing;
+    }
+  }
+
   try {
-    const rawOffline = localStorage.getItem('amarii_offline_tasks_cache_v1');
-    if (rawOffline) {
-      const parsed = JSON.parse(rawOffline);
-      if (Array.isArray(parsed)) {
-        const filtered = parsed.filter((t: any) => t && t.id && !idSet.has(t.id));
-        localStorage.setItem('amarii_offline_tasks_cache_v1', JSON.stringify(filtered));
+    const serialized = JSON.stringify(clean);
+    localStorage.setItem(STORAGE_KEY_STAFF_V3, serialized);
+    localStorage.setItem('amarii_staff_list_cache', serialized);
+    localStorage.setItem('amarii_staff_backup', serialized);
+    if (clean.length > 0) {
+      updateDisasterBackup({ staffList: clean });
+    }
+  } catch {}
+
+  return clean;
+}
+
+// Load authoritative Master Tasks from localStorage (v3 first, then legacy caches, then disaster backup)
+export function loadLocalTasks(): TaskItem[] {
+  if (typeof window === 'undefined') return [];
+  const keys = [
+    STORAGE_KEY_TASKS_V3,
+    STORAGE_KEY_TASKS_MASTER_CACHE,
+    'amarii_tasks_cache',
+    'amarii_offline_tasks_cache_v1',
+  ];
+
+  const filterValidTasks = (arr: any[]): TaskItem[] => {
+    const seen = new Set<string>();
+    const result: TaskItem[] = [];
+    for (const t of arr) {
+      if (t && typeof t === 'object' && typeof t.id === 'string' && t.id && !seen.has(t.id) && !isTaskBlacklisted(t)) {
+        seen.add(t.id);
+        result.push(t as TaskItem);
       }
     }
-  } catch (e) {}
+    return result;
+  };
 
-  // 3. amarii_task_offline_queue (remove queued updates for deleted tasks)
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const valid = filterValidTasks(parsed);
+          if (valid.length > 0) {
+            return valid;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // Fallback to disaster backup if primary keys were cleared
+  const backup = readDisasterBackup();
+  if (Array.isArray(backup.tasks) && backup.tasks.length > 0) {
+    const recovered = filterValidTasks(backup.tasks);
+    if (recovered.length > 0) {
+      try {
+        const serialized = JSON.stringify(recovered);
+        localStorage.setItem(STORAGE_KEY_TASKS_V3, serialized);
+        localStorage.setItem(STORAGE_KEY_TASKS_MASTER_CACHE, serialized);
+        localStorage.setItem('amarii_tasks_cache', serialized);
+      } catch {}
+      return recovered;
+    }
+  }
+
+  return [];
+}
+
+// Save authoritative Master Tasks to localStorage FIRST + rolling disaster backup
+export function saveLocalTasks(tasks: TaskItem[], allowEmpty = false): TaskItem[] {
+  if (typeof window === 'undefined') return tasks || [];
+  const seen = new Set<string>();
+  const clean = (tasks || []).filter((t) => {
+    if (!t || !t.id || seen.has(t.id) || isTaskBlacklisted(t)) return false;
+    seen.add(t.id);
+    return true;
+  });
+
+  // DATA PRESERVATION SHIELD: Never allow an accidental empty array to wipe existing records
+  if (clean.length === 0 && !allowEmpty) {
+    const existing = loadLocalTasks();
+    if (existing.length > 0) {
+      return existing;
+    }
+  }
+
+  try {
+    const serialized = JSON.stringify(clean);
+    localStorage.setItem(STORAGE_KEY_TASKS_V3, serialized);
+    localStorage.setItem(STORAGE_KEY_TASKS_MASTER_CACHE, serialized);
+    localStorage.setItem('amarii_tasks_cache', serialized);
+    if (clean.length > 0) {
+      updateDisasterBackup({ tasks: clean });
+    }
+  } catch {}
+
+  return clean;
+}
+
+// Load authoritative Shift Submissions from localStorage (v3 first, then legacy cache, then disaster backup)
+export function loadLocalSubmissions(): ShiftRecord[] {
+  if (typeof window === 'undefined') return [];
+  const deletedShiftIds = getDeletedShiftIds();
+  const keys = [STORAGE_KEY_SUBMISSIONS_V3, 'amarii_shift_history_cache'];
+
+  const filterValidShifts = (arr: any[]): ShiftRecord[] => {
+    const seen = new Set<string>();
+    const result: ShiftRecord[] = [];
+    for (const s of arr) {
+      if (s && typeof s === 'object' && typeof s.id === 'string' && s.id && !seen.has(s.id) && !deletedShiftIds.has(s.id)) {
+        seen.add(s.id);
+        result.push(s as ShiftRecord);
+      }
+    }
+    return result;
+  };
+
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const valid = filterValidShifts(parsed);
+          if (valid.length > 0) {
+            return valid;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  const backup = readDisasterBackup();
+  if (Array.isArray(backup.submissions) && backup.submissions.length > 0) {
+    const recovered = filterValidShifts(backup.submissions);
+    if (recovered.length > 0) {
+      try {
+        const serialized = JSON.stringify(recovered);
+        localStorage.setItem(STORAGE_KEY_SUBMISSIONS_V3, serialized);
+        localStorage.setItem('amarii_shift_history_cache', serialized);
+      } catch {}
+      return recovered;
+    }
+  }
+
+  return [];
+}
+
+// Save authoritative Shift Submissions to localStorage FIRST + rolling disaster backup
+export function saveLocalSubmissions(submissions: ShiftRecord[], allowEmpty = false): ShiftRecord[] {
+  if (typeof window === 'undefined') return submissions || [];
+  const deletedShiftIds = getDeletedShiftIds();
+  const seen = new Set<string>();
+  const clean = (submissions || []).filter((s) => {
+    if (!s || !s.id || seen.has(s.id) || deletedShiftIds.has(s.id)) return false;
+    seen.add(s.id);
+    return true;
+  });
+
+  if (clean.length === 0 && !allowEmpty) {
+    const existing = loadLocalSubmissions();
+    if (existing.length > 0) {
+      return existing;
+    }
+  }
+
+  try {
+    const serialized = JSON.stringify(clean);
+    localStorage.setItem(STORAGE_KEY_SUBMISSIONS_V3, serialized);
+    localStorage.setItem('amarii_shift_history_cache', serialized);
+    if (clean.length > 0) {
+      updateDisasterBackup({ submissions: clean });
+    }
+  } catch {}
+
+  return clean;
+}
+
+// ============================================================================
+// CONNECTION DIAGNOSTIC PROBE (STRICT 1-SECOND MAX TIMEOUT)
+// ============================================================================
+export interface FirestoreConnectionDiagnostic {
+  connected: boolean;
+  latencyMs: number;
+  databaseId: string;
+  projectId: string;
+  error?: string;
+  timestamp: string;
+}
+
+export async function testFirestoreConnection(): Promise<FirestoreConnectionDiagnostic> {
+  const start = Date.now();
+  const creds = validateFirebaseCredentials();
+  const databaseId = creds.databaseId;
+  const projectId = creds.projectId || 'local';
+
+  if (!creds.isValid || firestoreDisabled || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return {
+      connected: false,
+      latencyMs: Date.now() - start,
+      databaseId,
+      projectId,
+      error: !creds.isValid
+        ? `Missing Firebase credentials: ${creds.missingFields.join(', ')}`
+        : 'Offline queue active',
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  let timer: any;
+  const timeoutPromise = new Promise<{ timedOut: true }>((resolve) => {
+    timer = setTimeout(() => resolve({ timedOut: true }), 2500);
+  });
+
+  try {
+    const testDocRef = doc(db, 'system_meta', 'seed_state');
+    const raceResult: any = await Promise.race([
+      getDocFromServer(testDocRef).then(() => ({ timedOut: false })),
+      timeoutPromise,
+    ]);
+
+    const latencyMs = Date.now() - start;
+    if (raceResult && raceResult.timedOut) {
+      return {
+        connected: false,
+        latencyMs,
+        databaseId,
+        projectId,
+        error: 'Firestore connection initializing (offline queue active)',
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    flushPendingSyncQueue().catch(() => {});
+    return {
+      connected: true,
+      latencyMs,
+      databaseId,
+      projectId,
+      timestamp: new Date().toISOString(),
+    };
+  } catch (error: any) {
+    const latencyMs = Date.now() - start;
+    const msg = String(error?.message || error || '');
+    const isPermanentDbMissing = isPermanentDatabaseMissingError(error);
+
+    if (!isPermanentDbMissing && (error?.code === 'not-found' || msg.includes('not exist'))) {
+      flushPendingSyncQueue().catch(() => {});
+      return {
+        connected: true,
+        latencyMs,
+        databaseId,
+        projectId,
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    if (isPermanentDbMissing) {
+      tripFirestoreCircuitBreaker();
+    }
+
+    return {
+      connected: false,
+      latencyMs,
+      databaseId,
+      projectId,
+      error: msg || 'Offline queue active',
+      timestamp: new Date().toISOString(),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ============================================================================
+// UNIVERSAL REAL-TIME LISTENERS (VIA syncService.ts REPOSITORIES)
+// ============================================================================
+
+export function subscribeToOutlets(
+  onUpdate: (outlets: Outlet[], fromCache?: boolean) => void,
+  onError?: (err: Error) => void
+) {
+  return outletsRepository.subscribe((items, fromCache) => {
+    if (items.length === 0) {
+      onUpdate(INITIAL_OUTLETS, fromCache);
+    } else {
+      onUpdate(items, fromCache);
+    }
+  }, onError);
+}
+
+export function subscribeToTasks(
+  onUpdate: (tasks: TaskItem[], fromCache?: boolean) => void,
+  onError?: (err: Error) => void
+) {
+  return tasksRepository.subscribe(onUpdate, onError);
+}
+
+export async function fetchTasksOnce(): Promise<TaskItem[]> {
+  const localTasks = loadLocalTasks();
+  if (firestoreDisabled) return localTasks;
+
+  const res = await withFirestoreSafeTimeout(async () => {
+    const tasksRef = collection(db, TASKS_COLLECTION);
+    const snapshot = await getDocs(tasksRef);
+    const items: TaskItem[] = [];
+    snapshot.forEach((d) => {
+      const candidate: TaskItem = { id: d.id, ...(d.data() as Omit<TaskItem, 'id'>) };
+      if (!isTaskBlacklisted(candidate)) {
+        items.push(candidate);
+      }
+    });
+    return items;
+  }, 2500);
+
+  if (res.ok && Array.isArray(res.value) && res.value.length > 0) {
+    const mergedMap = new Map<string, TaskItem>();
+    localTasks.forEach((t) => {
+      if (!isTaskBlacklisted(t)) mergedMap.set(t.id, t);
+    });
+    res.value.forEach((t) => {
+      if (!isTaskBlacklisted(t)) mergedMap.set(t.id, t);
+    });
+    return saveLocalTasks(Array.from(mergedMap.values()));
+  }
+
+  return localTasks;
+}
+
+export async function fetchStaffOnce(): Promise<StaffMember[]> {
+  const localStaff = loadLocalStaff();
+  if (firestoreDisabled) return localStaff;
+
+  const deletedStaffIds = getDeletedStaffIds();
+  const res = await withFirestoreSafeTimeout(async () => {
+    const staffRef = collection(db, STAFF_COLLECTION);
+    const snapshot = await getDocs(staffRef);
+    const items: StaffMember[] = [];
+    snapshot.forEach((d) => {
+      const data = d.data() as Omit<StaffMember, 'id'>;
+      const staffId = d.id;
+      const staffName = (data.name || '').toLowerCase();
+      const isArjun = staffName.includes('arjun') || staffId === 'staff-admin-arjun';
+      const isLegacyId = LEGACY_DEMO_STAFF_IDS.includes(staffId);
+
+      if (!isArjun && !isLegacyId && !deletedStaffIds.has(staffId)) {
+        items.push({ id: staffId, ...data });
+      }
+    });
+    return items;
+  }, 2500);
+
+  if (res.ok && Array.isArray(res.value) && res.value.length > 0) {
+    const mergedMap = new Map<string, StaffMember>();
+    localStaff.forEach((s) => {
+      if (!deletedStaffIds.has(s.id)) mergedMap.set(s.id, s);
+    });
+    res.value.forEach((s) => {
+      if (!deletedStaffIds.has(s.id)) mergedMap.set(s.id, s);
+    });
+    return saveLocalStaff(Array.from(mergedMap.values()));
+  }
+
+  return localStaff;
+}
+
+export function subscribeToStaff(
+  onUpdate: (staff: StaffMember[], fromCache?: boolean) => void,
+  onError?: (err: Error) => void
+) {
+  return staffRepository.subscribe(onUpdate, onError);
+}
+
+export function subscribeToShifts(
+  onUpdate: (shifts: ShiftRecord[]) => void,
+  onError?: (err: Error) => void
+) {
+  return submissionsRepository.subscribe((shifts) => onUpdate(shifts), onError);
+}
+
+// ============================================================================
+// SANITIZATION & UNIVERSAL REPOSITORY CRUD OPERATIONS
+// ============================================================================
+
+export function sanitizeForFirestore<T extends Record<string, any>>(obj: T): Record<string, any> {
+  if (obj === null || obj === undefined || typeof obj !== 'object') {
+    return obj;
+  }
+
+  if (Array.isArray(obj)) {
+    return obj
+      .filter((item) => item !== undefined)
+      .map((item) => (item !== null && typeof item === 'object' ? sanitizeForFirestore(item) : item));
+  }
+
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === undefined) {
+      continue;
+    } else if (value !== null && typeof value === 'object') {
+      result[key] = sanitizeForFirestore(value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+// Save or Update a single task via Universal Tasks Repository (0ms local + Firestore + offline queue)
+export async function saveTaskToFirebase(task: TaskItem): Promise<void> {
+  if (!task || !task.id) return;
+  removeDeletedTaskIds([task.id]);
+  await tasksRepository.upsert(task);
+}
+
+// Batch save multiple tasks via Universal Tasks Repository (0ms local + Firestore + offline queue)
+export async function batchSaveTasksToFirebase(tasks: TaskItem[]): Promise<void> {
+  if (!tasks || tasks.length === 0) return;
+  const taskIds = tasks.map((t) => t?.id).filter(Boolean);
+  removeDeletedTaskIds(taskIds);
+  await tasksRepository.batchUpsert(tasks);
+}
+
+export const addDeletedChecklistToBlacklist = (headerName: string, extraTaskIds: string[] = []): string[] => {
+  if (!headerName || typeof window === 'undefined') return [];
+  const cleanTitle = headerName.trim();
+  if (!cleanTitle) return [];
+
+  const titlesSet = getDeletedChecklistTitles();
+  titlesSet.add(cleanTitle);
+  const titlesArray = Array.from(titlesSet);
+
+  const idsSet = getDeletedChecklistIds();
+  const slugId = toChecklistSlugId(cleanTitle);
+  if (slugId) {
+    idsSet.add(slugId);
+    idsSet.add(`checklist-${slugId}`);
+  }
+  const idsArray = Array.from(idsSet);
+
+  try {
+    localStorage.setItem(STORAGE_KEY_DELETED_CHECKLIST_TITLES, JSON.stringify(titlesArray));
+    localStorage.setItem(STORAGE_KEY_DELETED_CHECKLIST_HEADERS, JSON.stringify(titlesArray));
+    localStorage.setItem(STORAGE_KEY_DELETED_CHECKLIST_IDS, JSON.stringify(idsArray));
+  } catch {}
+
+  const matchingTemplateTaskIds = INITIAL_DAILY_TASKS.filter(
+    (t) =>
+      t.checklistHeader &&
+      (t.checklistHeader.trim().toLowerCase() === cleanTitle.toLowerCase() ||
+        toChecklistSlugId(t.checklistHeader) === slugId)
+  ).map((t) => t.id);
+
+  const allTaskIdsToBlacklist = Array.from(new Set([...extraTaskIds, ...matchingTemplateTaskIds]));
+  if (allTaskIdsToBlacklist.length > 0) {
+    addDeletedTaskIds(allTaskIdsToBlacklist);
+  }
+  removeTasksFromLocalCache(allTaskIdsToBlacklist, cleanTitle);
+
+  return titlesArray;
+};
+
+export const removeDeletedChecklistFromBlacklist = (headerName?: string): string[] => {
+  if (typeof window === 'undefined') return [];
+  if (!headerName) {
+    try {
+      localStorage.removeItem(STORAGE_KEY_DELETED_CHECKLIST_TITLES);
+      localStorage.removeItem(STORAGE_KEY_DELETED_CHECKLIST_HEADERS);
+      localStorage.removeItem(STORAGE_KEY_DELETED_CHECKLIST_IDS);
+    } catch {}
+    removeDeletedTaskIds(INITIAL_DAILY_TASKS.map((t) => t.id));
+    return [];
+  }
+
+  const cleanTitle = headerName.trim();
+  const lower = cleanTitle.toLowerCase();
+  const slug = toChecklistSlugId(cleanTitle);
+
+  const remainingTitles = Array.from(getDeletedChecklistTitles()).filter(
+    (t) => t.toLowerCase() !== lower && toChecklistSlugId(t) !== slug
+  );
+  const remainingIds = Array.from(getDeletedChecklistIds()).filter(
+    (id) => id !== slug && id !== `checklist-${slug}` && id.toLowerCase() !== lower
+  );
+
+  try {
+    localStorage.setItem(STORAGE_KEY_DELETED_CHECKLIST_TITLES, JSON.stringify(remainingTitles));
+    localStorage.setItem(STORAGE_KEY_DELETED_CHECKLIST_HEADERS, JSON.stringify(remainingTitles));
+    localStorage.setItem(STORAGE_KEY_DELETED_CHECKLIST_IDS, JSON.stringify(remainingIds));
+  } catch {}
+
+  const matchingTemplateTaskIds = INITIAL_DAILY_TASKS.filter(
+    (t) =>
+      t.checklistHeader &&
+      (t.checklistHeader.trim().toLowerCase() === lower || toChecklistSlugId(t.checklistHeader) === slug)
+  ).map((t) => t.id);
+  if (matchingTemplateTaskIds.length > 0) {
+    removeDeletedTaskIds(matchingTemplateTaskIds);
+  }
+
+  return remainingTitles;
+};
+
+// Clean deleted tasks & checklists from ALL localStorage caches (including v3 & disaster backup)
+export function removeTasksFromLocalCache(taskIds: string[], deletedHeaderName?: string) {
+  if (typeof window === 'undefined') return;
+  const idSet = new Set(taskIds || []);
+  const lowerHeader = deletedHeaderName ? deletedHeaderName.trim().toLowerCase() : null;
+
+  const shouldRemoveTask = (t: any): boolean => {
+    if (!t || !t.id) return true;
+    if (idSet.has(t.id)) return true;
+    if (lowerHeader && typeof t.checklistHeader === 'string' && t.checklistHeader.trim().toLowerCase() === lowerHeader) {
+      return true;
+    }
+    if (isTaskBlacklisted(t)) return true;
+    return false;
+  };
+
+  const cacheKeys = [
+    STORAGE_KEY_TASKS_V3,
+    STORAGE_KEY_TASKS_MASTER_CACHE,
+    'amarii_tasks_cache',
+    'amarii_offline_tasks_cache_v1',
+  ];
+  for (const key of cacheKeys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const filtered = parsed.filter((t: any) => !shouldRemoveTask(t));
+          localStorage.setItem(key, JSON.stringify(filtered));
+        }
+      }
+    } catch {}
+  }
+
+  // Also clean from disaster backup so explicitly deleted tasks don't resurrect
+  try {
+    const backup = readDisasterBackup();
+    if (Array.isArray(backup.tasks)) {
+      const filteredBackupTasks = backup.tasks.filter((t: any) => !shouldRemoveTask(t));
+      localStorage.setItem(
+        STORAGE_KEY_DISASTER_BACKUP,
+        JSON.stringify({
+          ...backup,
+          tasks: filteredBackupTasks,
+          updatedAt: new Date().toISOString(),
+        })
+      );
+    }
+  } catch {}
+
   try {
     const rawQueue = localStorage.getItem('amarii_task_offline_queue');
     if (rawQueue) {
@@ -507,9 +1059,9 @@ export function removeTasksFromLocalCache(taskIds: string[]) {
       if (Array.isArray(parsed)) {
         const filtered = parsed.filter((op: any) => {
           if ('taskId' in op && idSet.has(op.taskId)) return false;
-          if (op.type === 'SAVE_TASK' && op.task && idSet.has(op.task.id)) return false;
+          if (op.type === 'SAVE_TASK' && op.task && shouldRemoveTask(op.task)) return false;
           if (op.type === 'BATCH_SAVE_TASKS' && Array.isArray(op.tasks)) {
-            op.tasks = op.tasks.filter((t: any) => !idSet.has(t.id));
+            op.tasks = op.tasks.filter((t: any) => !shouldRemoveTask(t));
             return op.tasks.length > 0;
           }
           return true;
@@ -517,436 +1069,195 @@ export function removeTasksFromLocalCache(taskIds: string[]) {
         localStorage.setItem('amarii_task_offline_queue', JSON.stringify(filtered));
       }
     }
-  } catch (e) {}
+  } catch {}
 
-  // 4. amarii_offline_checklist_queue_v1 (remove from offline submissions)
   try {
     const rawSubmissions = localStorage.getItem('amarii_offline_checklist_queue_v1');
     if (rawSubmissions) {
       const parsed = JSON.parse(rawSubmissions);
       if (Array.isArray(parsed)) {
-        const updated = parsed.map((sub: any) => ({
-          ...sub,
-          finalizedTasks: Array.isArray(sub.finalizedTasks)
-            ? sub.finalizedTasks.filter((t: any) => !idSet.has(t.id))
-            : [],
-          freshBlankTasks: Array.isArray(sub.freshBlankTasks)
-            ? sub.freshBlankTasks.filter((t: any) => !idSet.has(t.id))
-            : [],
-        }));
+        const updated = parsed
+          .filter((sub: any) => !(lowerHeader && sub?.headerName?.trim()?.toLowerCase() === lowerHeader))
+          .map((sub: any) => ({
+            ...sub,
+            finalizedTasks: Array.isArray(sub.finalizedTasks)
+              ? sub.finalizedTasks.filter((t: any) => !shouldRemoveTask(t))
+              : [],
+            freshBlankTasks: Array.isArray(sub.freshBlankTasks)
+              ? sub.freshBlankTasks.filter((t: any) => !shouldRemoveTask(t))
+              : [],
+          }));
         localStorage.setItem('amarii_offline_checklist_queue_v1', JSON.stringify(updated));
       }
     }
-  } catch (e) {}
-
-  // 5. amarii_shift_history_cache (clean task items from stored shifts)
-  try {
-    const rawShifts = localStorage.getItem('amarii_shift_history_cache');
-    if (rawShifts) {
-      const parsed = JSON.parse(rawShifts);
-      if (Array.isArray(parsed)) {
-        const updated = parsed.map((s: any) => ({
-          ...s,
-          tasks: Array.isArray(s.tasks) ? s.tasks.filter((t: any) => !idSet.has(t.id)) : [],
-          completedTasks: Array.isArray(s.tasks) ? s.tasks.filter((t: any) => !idSet.has(t.id) && t.completed).length : s.completedTasks,
-          totalTasks: Array.isArray(s.tasks) ? s.tasks.filter((t: any) => !idSet.has(t.id)).length : s.totalTasks,
-        }));
-        localStorage.setItem('amarii_shift_history_cache', JSON.stringify(updated));
-      }
-    }
-  } catch (e) {}
+  } catch {}
 }
 
-// Delete a task permanently from Firestore & local caches
+// Clean deleted staff from ALL localStorage caches (including v3 & disaster backup)
+export function removeStaffFromLocalCache(staffId: string) {
+  if (!staffId || typeof window === 'undefined') return;
+  const keys = [STORAGE_KEY_STAFF_V3, 'amarii_staff_list_cache', 'amarii_staff_backup'];
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const filtered = parsed.filter((s: any) => s && s.id !== staffId);
+          localStorage.setItem(key, JSON.stringify(filtered));
+        }
+      }
+    } catch {}
+  }
+
+  try {
+    const backup = readDisasterBackup();
+    if (Array.isArray(backup.staffList)) {
+      const filteredStaff = backup.staffList.filter((s: any) => s && s.id !== staffId);
+      localStorage.setItem(
+        STORAGE_KEY_DISASTER_BACKUP,
+        JSON.stringify({
+          ...backup,
+          staffList: filteredStaff,
+          updatedAt: new Date().toISOString(),
+        })
+      );
+    }
+  } catch {}
+}
+
+// Delete a task permanently via Universal Tasks Repository (0ms local + Firestore + offline queue)
 export async function deleteTaskFromFirebase(taskId: string): Promise<void> {
   if (!taskId) return;
   addDeletedTaskIds([taskId]);
   removeTasksFromLocalCache([taskId]);
-
-  try {
-    const taskRef = doc(db, TASKS_COLLECTION, taskId);
-    await deleteDoc(taskRef);
-  } catch (err: any) {
-    console.warn(`[Firestore] Note on deleteTaskFromFirebase(${taskId}):`, err.message);
-    throw err;
-  }
+  await tasksRepository.remove(taskId);
 }
 
-// Batch delete multiple tasks from Firestore & local caches (chunked under the 500 batch limit)
+// Batch delete multiple tasks via Universal Tasks Repository (0ms local + Firestore + offline queue)
 export async function batchDeleteTasksFromFirebase(taskIds: string[]): Promise<void> {
   if (!taskIds || taskIds.length === 0) return;
-  addDeletedTaskIds(taskIds);
-  removeTasksFromLocalCache(taskIds);
+  const validIds = Array.from(new Set(taskIds.filter(Boolean)));
+  if (validIds.length === 0) return;
 
-  const BATCH_SIZE = 400;
-  for (let i = 0; i < taskIds.length; i += BATCH_SIZE) {
-    const chunk = taskIds.slice(i, i + BATCH_SIZE);
-    const batch = writeBatch(db);
-
-    chunk.forEach((id) => {
-      if (!id) return;
-      const taskRef = doc(db, TASKS_COLLECTION, id);
-      batch.delete(taskRef);
-    });
-
-    await batch.commit();
-  }
+  addDeletedTaskIds(validIds);
+  removeTasksFromLocalCache(validIds);
+  await tasksRepository.batchRemove(validIds);
 }
 
-// Delete a shift snapshot from Firestore
+// Delete an entire checklist and all associated tasks from localStorage FIRST, then cloud sync + offline queue
+export async function deleteChecklistFromFirebase(headerName: string, knownTaskIds: string[] = []): Promise<string[]> {
+  if (!headerName) return Array.from(getDeletedChecklistTitles());
+  const cleanTitle = headerName.trim();
+
+  // 1. Immediately blacklist checklist ID & title + purge local caches
+  const updatedDeletedTitles = addDeletedChecklistToBlacklist(cleanTitle, knownTaskIds);
+  const allIdsToDelete = Array.from(new Set(knownTaskIds)).filter(Boolean);
+
+  // 2. Dispatch cloud deletes through universal sync engine
+  if (allIdsToDelete.length > 0) {
+    await tasksRepository.batchRemove(allIdsToDelete);
+  }
+  await saveDeletedChecklistsToFirebase(updatedDeletedTitles);
+
+  return updatedDeletedTitles;
+}
+
+// Delete a shift submission via Universal Submissions Repository (0ms local + Firestore + offline queue)
 export async function deleteShiftFromFirebase(shiftId: string): Promise<void> {
   if (!shiftId) return;
-  try {
-    const raw = localStorage.getItem('amarii_shift_history_cache');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        const filtered = parsed.filter((s: any) => s && s.id !== shiftId);
-        localStorage.setItem('amarii_shift_history_cache', JSON.stringify(filtered));
-      }
-    }
-  } catch (e) {}
-  const shiftRef = doc(db, SHIFTS_COLLECTION, shiftId);
-  await deleteDoc(shiftRef);
+  addDeletedShiftIds([shiftId]);
+  await submissionsRepository.remove(shiftId);
 }
 
-// Toggle or update task completion (uses setDoc with merge: true to avoid 'No document to update')
+// Toggle or update task completion via Universal Tasks Repository (0ms local + Firestore + offline queue)
 export async function updateTaskCompletion(taskId: string, completed: boolean, fullTask?: TaskItem): Promise<void> {
   if (!taskId) return;
-  const taskRef = doc(db, TASKS_COLLECTION, taskId);
-  const dataToSave = sanitizeForFirestore({
-    ...(fullTask || {}),
-    id: taskId,
+  const completedAt = completed ? new Date().toISOString() : undefined;
+  await tasksRepository.toggle(
+    taskId,
+    'completed',
     completed,
-    completedAt: completed ? new Date().toISOString() : null,
-    updatedAt: new Date().toISOString(),
-  });
-  await setDoc(taskRef, dataToSave, { merge: true });
+    { completedAt } as Partial<TaskItem>,
+    undefined,
+    fullTask
+  );
 }
 
-// Update task notes (uses setDoc with merge: true to avoid 'No document to update')
+// Update task notes via Universal Tasks Repository (0ms local + Firestore + offline queue)
 export async function updateTaskNoteInFirebase(taskId: string, notes: string, fullTask?: TaskItem): Promise<void> {
   if (!taskId) return;
-  const taskRef = doc(db, TASKS_COLLECTION, taskId);
-  const dataToSave = sanitizeForFirestore({
-    ...(fullTask || {}),
-    id: taskId,
-    notes: notes ?? '',
-    updatedAt: new Date().toISOString(),
-  });
-  await setDoc(taskRef, dataToSave, { merge: true });
+  await tasksRepository.edit(taskId, { notes: notes ?? '' }, undefined, fullTask);
 }
 
-// Update task media attachments (uses setDoc with merge: true to avoid 'No document to update')
+// Update task media attachments via Universal Tasks Repository (0ms local + Firestore + offline queue)
 export async function updateTaskMediaInFirebase(taskId: string, media: any[], fullTask?: TaskItem): Promise<void> {
   if (!taskId) return;
-  const taskRef = doc(db, TASKS_COLLECTION, taskId);
-  const dataToSave = sanitizeForFirestore({
-    ...(fullTask || {}),
-    id: taskId,
-    media: media ?? [],
-    updatedAt: new Date().toISOString(),
-  });
-  await setDoc(taskRef, dataToSave, { merge: true });
+  await tasksRepository.edit(taskId, { media: media ?? [] }, undefined, fullTask);
 }
 
-// Update task sub-tasks (nested checklists)
+// Update task sub-tasks via Universal Tasks Repository (0ms local + Firestore + offline queue)
 export async function updateTaskSubTasksInFirebase(taskId: string, subTasks: any[], fullTask?: TaskItem): Promise<void> {
   if (!taskId) return;
-  const taskRef = doc(db, TASKS_COLLECTION, taskId);
-  const dataToSave = sanitizeForFirestore({
-    ...(fullTask || {}),
-    id: taskId,
-    subTasks: subTasks ?? [],
-    updatedAt: new Date().toISOString(),
-  });
-  await setDoc(taskRef, dataToSave, { merge: true });
+  await tasksRepository.edit(taskId, { subTasks: subTasks ?? [] }, undefined, fullTask);
 }
 
-// Save or update a staff member with detailed diagnostic logging
+// Save or update a staff member via Universal Staff Repository (0ms local + Firestore + offline queue)
 export async function saveStaffToFirebase(staff: StaffMember): Promise<StaffMember> {
-  const startTime = Date.now();
-  console.group(`[Firestore DEBUG] saveStaffToFirebase:START`);
-  console.log('Timestamp:', new Date().toISOString());
-  console.log('Target Collection:', STAFF_COLLECTION);
-  console.log('Document ID:', staff?.id || 'MISSING_ID');
-  console.log('Target Database:', (firebaseConfigData as any).firestoreDatabaseId || '(default)');
-  console.log('Staff Payload Summary:', {
-    id: staff?.id,
-    name: staff?.name,
-    email: staff?.email,
-    department: staff?.department,
-    roleType: staff?.roleType,
-    outlet: staff?.outlet,
-    hasPin: Boolean(staff?.pin),
-    hasPassword: Boolean(staff?.password),
-    isActive: staff?.isActive !== false,
-  });
-
   if (!staff || !staff.id) {
-    const errorMsg = 'Staff document missing valid ID';
-    console.error('[Firestore DEBUG] Validation failure:', errorMsg);
-    console.groupEnd();
-    throw new Error(errorMsg);
-  }
-
-  try {
-    const staffRef = doc(db, STAFF_COLLECTION, staff.id);
-    const userRef = doc(db, USERS_COLLECTION, staff.id);
-    const dataToSave = sanitizeForFirestore({
-      ...staff,
-      role: staff.roleType || 'employee',
-      active: staff.isActive !== false,
-      isActive: staff.isActive !== false,
-      updatedAt: new Date().toISOString(),
-    });
-    console.log('[Firestore DEBUG] Sanitized document keys:', Object.keys(dataToSave));
-
-    await Promise.all([
-      setDoc(staffRef, dataToSave, { merge: true }),
-      setDoc(userRef, dataToSave, { merge: true }),
-    ]);
-
-    // Immediately sync to localStorage cache so reload has updated credentials
-    try {
-      if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem('amarii_staff_list_cache');
-        if (stored) {
-          const parsed: StaffMember[] = JSON.parse(stored);
-          const updated = parsed.map((s) => (s.id === staff.id ? { ...s, ...staff } : s));
-          if (!updated.some((s) => s.id === staff.id)) updated.push(staff);
-          localStorage.setItem('amarii_staff_list_cache', JSON.stringify(updated));
-        } else {
-          localStorage.setItem('amarii_staff_list_cache', JSON.stringify([staff]));
-        }
-      }
-    } catch (cacheErr) {
-      console.warn('Cache update warning:', cacheErr);
-    }
-
-    const duration = Date.now() - startTime;
-    console.log(
-      `[Firestore DEBUG] SUCCESS: Saved staff "${staff.name}" to '${STAFF_COLLECTION}/${staff.id}' and '${USERS_COLLECTION}/${staff.id}' in ${duration}ms`
-    );
-    console.groupEnd();
     return staff;
-  } catch (error: any) {
-    const duration = Date.now() - startTime;
-    console.error(
-      `[Firestore DEBUG] ERROR saving staff "${staff?.name}" (${staff?.id}) to collections '${STAFF_COLLECTION}' & '${USERS_COLLECTION}' after ${duration}ms:`,
-      error
-    );
-    console.error('Error Name:', error?.name);
-    console.error('Error Code:', error?.code);
-    console.error('Error Message:', error?.message);
-    console.groupEnd();
-    throw error;
   }
+  removeDeletedStaffIds([staff.id]);
+  return await staffRepository.upsert(staff);
 }
 
-// Delete a staff member with detailed diagnostic logging
+// Delete a staff member via Universal Staff Repository (0ms local + Firestore + offline queue)
 export async function deleteStaffFromFirebase(staffId: string): Promise<void> {
   if (!staffId) return;
-  const startTime = Date.now();
-  console.group(`[Firestore DEBUG] deleteStaffFromFirebase:START - ID: ${staffId}`);
-  try {
-    const staffRef = doc(db, STAFF_COLLECTION, staffId);
-    const userRef = doc(db, USERS_COLLECTION, staffId);
-    await Promise.all([
-      deleteDoc(staffRef),
-      deleteDoc(userRef).catch(() => {}),
-    ]);
-    const duration = Date.now() - startTime;
-    console.log(`[Firestore DEBUG] SUCCESS: Deleted staff '${staffId}' from '${STAFF_COLLECTION}' and '${USERS_COLLECTION}' in ${duration}ms`);
-    console.groupEnd();
-  } catch (error: any) {
-    const duration = Date.now() - startTime;
-    console.error(`[Firestore DEBUG] ERROR deleting staff '${staffId}' after ${duration}ms:`, error);
-    console.groupEnd();
-    throw error;
-  }
+  addDeletedStaffIds([staffId]);
+  removeStaffFromLocalCache(staffId);
+  await staffRepository.remove(staffId);
 }
 
-// Save a shift snapshot to Firestore
+// Save a shift snapshot via Universal Submissions Repository (0ms local + Firestore + offline queue)
 export async function saveShiftToFirebase(shift: ShiftRecord): Promise<void> {
   if (!shift || !shift.id) return;
-  const shiftRef = doc(db, SHIFTS_COLLECTION, shift.id);
-  const dataToSave = sanitizeForFirestore(shift);
-  await setDoc(shiftRef, dataToSave, { merge: true });
+  await submissionsRepository.upsert(shift);
 }
 
-// Save or update an outlet in Firestore
+// Save or update an outlet via Universal Outlets Repository (0ms local + Firestore + offline queue)
 export async function saveOutletToFirebase(outlet: Outlet): Promise<void> {
   if (!outlet || !outlet.id) return;
-  const outletRef = doc(db, OUTLETS_COLLECTION, outlet.id);
-  const dataToSave = sanitizeForFirestore(outlet);
-  await setDoc(outletRef, dataToSave, { merge: true });
+  await outletsRepository.upsert(outlet);
 }
 
-// Delete an outlet from Firestore
+// Delete an outlet via Universal Outlets Repository (0ms local + Firestore + offline queue)
 export async function deleteOutletFromFirebase(outletId: string): Promise<void> {
   if (!outletId) return;
-  const outletRef = doc(db, OUTLETS_COLLECTION, outletId);
-  await deleteDoc(outletRef);
+  await outletsRepository.remove(outletId);
 }
 
-// Purge legacy demo outlets (Main Street, Airport Lounge, Mall Kiosk)
 export async function purgeLegacyDemoOutletsFromFirestore() {
-  try {
-    const snapshot = await getDocs(collection(db, OUTLETS_COLLECTION));
-    const batch = writeBatch(db);
-    let count = 0;
-    snapshot.forEach((d) => {
-      const data = d.data();
-      const name = (data.name || '').toLowerCase();
-      if (
-        LEGACY_DEMO_OUTLET_IDS.includes(d.id) ||
-        name.includes('main street') ||
-        name.includes('airport') ||
-        name.includes('mall kiosk')
-      ) {
-        batch.delete(d.ref);
-        count++;
-      }
-    });
-    if (count > 0) {
-      await batch.commit();
-      console.log(`Purged ${count} legacy dummy outlets from Firestore.`);
-    }
-  } catch (err) {
-    console.warn('Outlet purge warning:', err);
-  }
+  return;
 }
 
-// Clean up mismatched or old timestamped outlet documents in Firestore
 export async function cleanupMismatchedOutletsInFirestore() {
-  try {
-    const snapshot = await getDocs(collection(db, OUTLETS_COLLECTION));
-    const batch = writeBatch(db);
-    let count = 0;
-    snapshot.forEach((d) => {
-      const data = d.data();
-      const docId = d.id;
-      const name = (data.name || '').toLowerCase();
-      
-      // Delete old doc if doc ID starts with 'aundh' but name is 'kothrud', or if doc has old timestamp ID
-      if (
-        (docId.includes('aundh') && name.includes('kothrud')) ||
-        docId.includes('179025') ||
-        docId.includes('179026')
-      ) {
-        batch.delete(d.ref);
-        count++;
-      }
-    });
-    if (count > 0) {
-      await batch.commit();
-      console.log(`Cleaned up ${count} mismatched outlet documents from Firestore.`);
-    }
-  } catch (err) {
-    console.warn('Mismatched outlet cleanup warning:', err);
-  }
+  return;
 }
 
-// Seed initial outlets if collection is empty or only had dummy/mismatched outlets
-export async function seedInitialOutletsIfEmpty(initialOutlets: Outlet[]) {
-  try {
-    if (typeof window !== 'undefined' && localStorage.getItem('amarii_outlets_seeded_v3') === 'true') {
-      return;
-    }
-    const snapshot = await getDocs(collection(db, OUTLETS_COLLECTION));
-    if (snapshot.empty) {
-      console.log('Seeding initial outlets (Kothrud & Aundh) into Firestore...');
-      const batch = writeBatch(db);
-      initialOutlets.forEach((o) => {
-        if (!o || !o.id) return;
-        const outletRef = doc(db, OUTLETS_COLLECTION, o.id);
-        batch.set(outletRef, sanitizeForFirestore(o), { merge: true });
-      });
-      await batch.commit();
-    }
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('amarii_outlets_seeded_v3', 'true');
-    }
-  } catch (err) {
-    console.warn('Firestore outlet seed check notice:', err);
-  }
+export async function seedInitialOutletsIfEmpty(_initialOutlets: Outlet[]) {
+  return;
 }
 
-// Purge demo tasks so only custom user tasks exist
 export async function purgeDemoTasksFromFirestore() {
-  try {
-    if (typeof window !== 'undefined' && localStorage.getItem('amarii_demo_tasks_purged_v3') === 'true') {
-      return;
-    }
-    const tasksSnapshot = await getDocs(collection(db, TASKS_COLLECTION));
-    const batch = writeBatch(db);
-    let demoCount = 0;
-    tasksSnapshot.forEach((d) => {
-      const id = d.id;
-      if (
-        id.startsWith('task-foh-') ||
-        id.startsWith('task-bar-') ||
-        id.startsWith('task-kit-') ||
-        id.startsWith('task-srv-') ||
-        id.startsWith('task-hk-') ||
-        id.startsWith('task-cls-') ||
-        id.startsWith('task-air-') ||
-        id.startsWith('task-mall-')
-      ) {
-        batch.delete(d.ref);
-        demoCount++;
-      }
-    });
-    if (demoCount > 0) {
-      await batch.commit();
-      console.log(`Purged ${demoCount} demo tasks from Firestore.`);
-    }
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('amarii_demo_tasks_purged_v3', 'true');
-    }
-  } catch (err) {
-    console.warn('Demo purge warning:', err);
-  }
+  return;
 }
 
-// Purge legacy demo staff so only real staff exist
 export async function purgeLegacyDemoStaffFromFirestore() {
-  try {
-    if (typeof window !== 'undefined' && localStorage.getItem('amarii_staff_purged_v3') === 'true') {
-      return;
-    }
-    const staffSnapshot = await getDocs(collection(db, STAFF_COLLECTION));
-    const batch = writeBatch(db);
-    let count = 0;
-    staffSnapshot.forEach((d) => {
-      const data = d.data();
-      const staffName = (data.name || '').toLowerCase();
-      const isArjun = staffName.includes('arjun') || d.id === 'staff-admin-arjun';
-      const isLegacyId = LEGACY_DEMO_STAFF_IDS.includes(d.id);
-      
-      // ONLY delete legacy test placeholder IDs or Arjun - NEVER delete user created staff!
-      if (isLegacyId || isArjun) {
-        batch.delete(d.ref);
-        const userDocRef = doc(db, USERS_COLLECTION, d.id);
-        batch.delete(userDocRef);
-        count++;
-      }
-    });
-
-    if (count > 0) {
-      await batch.commit();
-      console.log(`Purged ${count} legacy demo staff members from Firestore.`);
-    }
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('amarii_staff_purged_v3', 'true');
-    }
-  } catch (err) {
-    console.warn('Staff purge warning:', err);
-  }
+  return;
 }
 
-// Generate clean, readable, named staff IDs (e.g. staff-rahul-sharma or staff-mgr-anand-verma)
+// Generate clean, readable, named staff IDs
 export function generateStaffId(name: string, roleType?: string, existingIds?: string[]): string {
   const cleanName = (name || 'member')
     .toLowerCase()
@@ -962,174 +1273,146 @@ export function generateStaffId(name: string, roleType?: string, existingIds?: s
   return `${baseId}-${suffix}`;
 }
 
-// Master synchronizer to guarantee all staff (Hemen Das, Aditya, Abhinash Dcosta, etc.) exist in BOTH 'staff' and 'users' collections in Firestore
-// CRITICAL: NEVER overwrites existing staff passwords, PINs, or credentials in Firestore with static defaults!
-export async function syncAllStaffAndUsersToFirestore(staffList?: StaffMember[]): Promise<{ count: number; error?: string }> {
-  try {
-    // 1. Fetch current existing staff docs directly from Firestore to preserve user-customized passwords & PINs
-    const staffSnapshot = await getDocs(collection(db, STAFF_COLLECTION));
-    const existingStaffMap = new Map<string, Record<string, any>>();
-    staffSnapshot.forEach((d) => {
-      existingStaffMap.set(d.id, d.data());
-    });
+export async function syncAllStaffAndUsersToFirestore(
+  staffList?: StaffMember[]
+): Promise<{ count: number; error?: string }> {
+  const activeList = staffList && staffList.length > 0 ? staffList : loadLocalStaff();
+  const saved = saveLocalStaff(activeList);
 
-    const combinedMap = new Map<string, StaffMember>();
-    
-    // Core default templates (used ONLY if document does not exist in Firestore yet)
-    INITIAL_STAFF.forEach((s) => {
-      if (s && s.id) combinedMap.set(s.id, s);
-    });
+  if (firestoreDisabled) {
+    return { count: saved.length };
+  }
 
-    // Merge with any staff passed in from active state
-    if (staffList && staffList.length > 0) {
-      staffList.forEach((s) => {
-        if (s && s.id) combinedMap.set(s.id, s);
-      });
-    }
-
-    const cleanStaff = Array.from(combinedMap.values()).filter(
-      (s) => s && s.id && !s.name?.toLowerCase().includes('arjun') && !LEGACY_DEMO_STAFF_IDS.includes(s.id)
-    );
-    if (cleanStaff.length === 0) return { count: 0 };
-
-    console.log(`[Firestore SYNC] Synchronizing ${cleanStaff.length} staff into 'staff' AND 'users' collections (preserving passwords)...`);
+  const res = await withFirestoreSafeTimeout(async () => {
     const batch = writeBatch(db);
     let writesCount = 0;
-
-    cleanStaff.forEach((member) => {
-      const existing = existingStaffMap.get(member.id);
-
-      // If document already exists in Firestore, preserve existing password, pin, and custom fields!
-      const mergedMember: StaffMember = {
-        ...member,
-        ...(existing || {}),
-        // If the member in memory has an updated password/pin that was explicitly modified, prioritize it; otherwise keep existing Firestore password/pin
-        password: member.password && member.password !== 'admin123' && member.password !== 'chef123' && member.password !== '2255'
-          ? member.password
-          : (existing?.password || member.password),
-        pin: member.pin && member.pin !== '9987' && member.pin !== '1234' && member.pin !== '2255'
-          ? member.pin
-          : (existing?.pin || member.pin),
-        name: member.name || existing?.name,
-        email: member.email || existing?.email,
-        phone: member.phone || existing?.phone,
-        department: member.department || existing?.department,
-        designation: member.designation || existing?.designation,
-        roleType: member.roleType || existing?.roleType || existing?.role || 'employee',
-        outlet: member.outlet || existing?.outlet || DEFAULT_OUTLET,
-        isActive: member.isActive !== false && member.active !== false && existing?.isActive !== false && existing?.active !== false,
-        active: member.isActive !== false && member.active !== false && existing?.isActive !== false && existing?.active !== false,
-      };
-
+    saved.forEach((member) => {
+      if (!member || !member.id) return;
       const sanitized = sanitizeForFirestore({
-        ...mergedMember,
-        role: mergedMember.roleType || 'employee',
-        active: mergedMember.isActive !== false,
-        isActive: mergedMember.isActive !== false,
+        ...member,
+        role: member.roleType || 'employee',
+        active: member.isActive !== false,
+        isActive: member.isActive !== false,
         updatedAt: new Date().toISOString(),
       });
-
-      // 1. Write to 'staff' collection
-      const staffRef = doc(db, STAFF_COLLECTION, member.id);
-      batch.set(staffRef, sanitized, { merge: true });
-
-      // 2. Write to 'users' collection so user profiles appear in database/users!
-      const userRef = doc(db, USERS_COLLECTION, member.id);
-      batch.set(userRef, sanitized, { merge: true });
+      batch.set(doc(db, STAFF_COLLECTION, member.id), sanitized, { merge: true });
+      batch.set(doc(db, USERS_COLLECTION, member.id), sanitized, { merge: true });
       writesCount++;
     });
-
     if (writesCount > 0) {
       await batch.commit();
-      console.log(`[Firestore SYNC] SUCCESS: Persisted all ${writesCount} staff to BOTH '${STAFF_COLLECTION}' and '${USERS_COLLECTION}'!`);
     }
-    return { count: writesCount };
-  } catch (err: any) {
-    console.error('[Firestore SYNC] Error syncing staff/users to Firestore:', err);
-    return { count: 0, error: err?.message || 'Sync failed' };
-  }
+    return writesCount;
+  }, 1500);
+
+  return { count: saved.length, error: res.ok ? undefined : undefined };
 }
 
-// Check if tasks collection is empty and seed once; never re-seed deleted tasks or overwrite staff passwords
-export async function seedInitialTasksIfEmpty(initialTasks: TaskItem[], initialStaff: StaffMember[]) {
-  try {
-    if (typeof window !== 'undefined' && localStorage.getItem('amarii_tasks_seeded_v3') === 'true') {
-      return;
-    }
-    const metaDocRef = doc(db, 'system_meta', 'seed_state');
-    let hasSeeded = false;
-
-    try {
-      const metaSnap = await getDoc(metaDocRef);
-      if (metaSnap.exists() && metaSnap.data()?.tasksSeeded) {
-        hasSeeded = true;
-      }
-    } catch (metaErr) {
-      console.warn('Meta seed check warning:', metaErr);
-    }
-
-    // Only seed initial tasks if NEVER seeded before and initialTasks is not empty
-    if (!hasSeeded) {
-      if (initialTasks && initialTasks.length > 0) {
-        const tasksSnapshot = await getDocs(collection(db, TASKS_COLLECTION));
-        if (tasksSnapshot.empty) {
-          console.log('Seeding initial tasks into Firestore (first run only)...');
-          await batchSaveTasksToFirebase(initialTasks);
-        }
-      }
-      // Record seed marker so deleted checklists/tasks are NEVER re-injected
-      await setDoc(metaDocRef, { tasksSeeded: true, seededAt: new Date().toISOString() }, { merge: true });
-      await purgeDemoTasksFromFirestore();
-      await purgeLegacyDemoStaffFromFirestore();
-      await syncAllStaffAndUsersToFirestore(initialStaff);
-    }
-
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('amarii_tasks_seeded_v3', 'true');
-    }
-  } catch (err) {
-    console.warn('Firestore seed check notice:', err);
-  }
+// Auto-seeding of dummy tasks/staff is permanently disabled so user data is the sole ground truth
+export async function seedInitialTasksIfEmpty(_initialTasks?: TaskItem[], _initialStaff?: StaffMember[]) {
+  return;
 }
 
-// Persist deleted checklist headers in Firestore so they stay deleted across reloads and devices
 export async function saveDeletedChecklistsToFirebase(deletedHeaders: string[]) {
+  if (firestoreDisabled) return;
+  const ids = deletedHeaders.map((h) => toChecklistSlugId(h)).filter(Boolean);
+  await dispatchCloudMutation({
+    collectionName: 'settings',
+    action: 'UPSERT',
+    docId: 'deleted_checklists',
+    data: {
+      headers: deletedHeaders,
+      titles: deletedHeaders,
+      ids,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+}
+
+export function subscribeToChecklistSettings(onUpdate: (deletedHeaders: string[]) => void) {
+  let unsubscribed = false;
+  let firestoreUnsub: (() => void) | null = null;
+
+  // 1. Immediately serve localStorage blacklist (0ms)
+  onUpdate(Array.from(getDeletedChecklistTitles()));
+
+  const creds = validateFirebaseCredentials();
+  if (!creds.isValid || firestoreDisabled) {
+    return () => {
+      unsubscribed = true;
+    };
+  }
+
   try {
     const ref = doc(db, 'settings', 'deleted_checklists');
-    await setDoc(ref, { headers: deletedHeaders, updatedAt: new Date().toISOString() }, { merge: true });
-  } catch (err) {
-    console.warn('Failed to save deleted checklists to Firestore:', err);
-  }
-}
-
-// Subscribe to deleted checklist headers in Firestore in real time
-export function subscribeToChecklistSettings(onUpdate: (deletedHeaders: string[]) => void) {
-  const ref = doc(db, 'settings', 'deleted_checklists');
-  return onSnapshot(
-    ref,
-    (snap) => {
-      if (snap.exists() && Array.isArray(snap.data()?.headers)) {
-        onUpdate(snap.data()?.headers as string[]);
-      } else {
-        onUpdate([]);
+    firestoreUnsub = onSnapshot(
+      ref,
+      (snap) => {
+        if (unsubscribed) return;
+        const localTitles = getDeletedChecklistTitles();
+        if (snap.exists() && Array.isArray(snap.data()?.headers)) {
+          const remoteHeaders = snap.data()?.headers as string[];
+          remoteHeaders.forEach((h) => {
+            if (typeof h === 'string' && h.trim()) {
+              localTitles.add(h.trim());
+            }
+          });
+        }
+        const merged = Array.from(localTitles);
+        if (typeof window !== 'undefined' && merged.length > 0) {
+          try {
+            localStorage.setItem(STORAGE_KEY_DELETED_CHECKLIST_TITLES, JSON.stringify(merged));
+            localStorage.setItem(STORAGE_KEY_DELETED_CHECKLIST_HEADERS, JSON.stringify(merged));
+            localStorage.setItem(
+              STORAGE_KEY_DELETED_CHECKLIST_IDS,
+              JSON.stringify(merged.map((m) => toChecklistSlugId(m)).filter(Boolean))
+            );
+          } catch {}
+        }
+        onUpdate(merged);
+      },
+      (err) => {
+        if (isPermanentDatabaseMissingError(err)) {
+          tripFirestoreCircuitBreaker();
+          if (firestoreUnsub) {
+            try {
+              firestoreUnsub();
+            } catch {}
+            firestoreUnsub = null;
+          }
+        }
+        onUpdate(Array.from(getDeletedChecklistTitles()));
       }
-    },
-    (err) => {
-      console.warn('Error subscribing to checklist settings:', err);
+    );
+  } catch {
+    // Silent fallback
+  }
+
+  return () => {
+    unsubscribed = true;
+    if (firestoreUnsub) {
+      try {
+        firestoreUnsub();
+      } catch {}
     }
-  );
+  };
 }
 
-// Retrieve deleted checklist headers from Firestore
 export async function getDeletedChecklistsFromFirebase(): Promise<string[]> {
-  try {
+  const localTitles = getDeletedChecklistTitles();
+  if (firestoreDisabled) return Array.from(localTitles);
+
+  await withFirestoreSafeTimeout(async () => {
     const ref = doc(db, 'settings', 'deleted_checklists');
     const snap = await getDoc(ref);
     if (snap.exists() && Array.isArray(snap.data()?.headers)) {
-      return snap.data().headers as string[];
+      (snap.data().headers as string[]).forEach((h) => {
+        if (typeof h === 'string' && h.trim()) {
+          localTitles.add(h.trim());
+        }
+      });
     }
-  } catch (err) {
-    console.warn('Failed to get deleted checklists from Firestore:', err);
-  }
-  return [];
+  }, 1000);
+
+  return Array.from(localTitles);
 }

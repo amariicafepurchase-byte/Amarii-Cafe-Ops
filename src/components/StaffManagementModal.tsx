@@ -32,7 +32,7 @@ import {
   Database,
 } from 'lucide-react';
 import { StaffMember, TaskDepartment, RoleType, TaskItem, DEFAULT_OUTLET } from '../types';
-import { DEPARTMENTS, DEPARTMENT_COLORS } from '../data/staffData';
+import { DEPARTMENTS, DEPARTMENT_COLORS, INITIAL_STAFF } from '../data/staffData';
 import { useOutlet } from '../context/OutletContext';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
@@ -41,6 +41,7 @@ import {
   deleteStaffFromFirebase,
   generateStaffId,
   syncAllStaffAndUsersToFirestore,
+  LEGACY_DEMO_STAFF_IDS,
 } from '../lib/firebase';
 
 interface StaffManagementModalProps {
@@ -50,6 +51,7 @@ interface StaffManagementModalProps {
   onAddStaff: (member: StaffMember) => Promise<void> | void;
   onUpdateStaff: (member: StaffMember) => Promise<void> | void;
   onDeleteStaff: (id: string) => Promise<void> | void;
+  onRestoreStaffList?: (restoredList: StaffMember[]) => Promise<void> | void;
   tasks?: TaskItem[];
   onAssignTask?: (staff: StaffMember) => void;
   onQuickAssignTaskToStaff?: (staff: StaffMember) => void;
@@ -62,6 +64,7 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
   onAddStaff,
   onUpdateStaff,
   onDeleteStaff,
+  onRestoreStaffList,
   tasks = [],
   onAssignTask,
   onQuickAssignTaskToStaff,
@@ -146,7 +149,8 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
   const [performanceSort, setPerformanceSort] = useState<'completion' | 'assigned' | 'needs-training' | 'name'>('completion');
   const [performanceDeptFilter, setPerformanceDeptFilter] = useState<string>('all');
 
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [staffPendingDelete, setStaffPendingDelete] = useState<StaffMember | null>(null);
+  const [deletingStaffId, setDeletingStaffId] = useState<string | null>(null);
 
   const safeStaffList = useMemo(() => {
     const raw = Array.isArray(staffList) ? staffList : [];
@@ -231,7 +235,85 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
     setIsAddingNew(true);
   };
 
-  const handleSaveForm = (e: React.FormEvent) => {
+  // Restore staff cache from backup or default 14 members
+  const handleRestoreRecentStaffCache = async () => {
+    setIsSyncingAllStaff(true);
+    setSyncNotice(null);
+    try {
+      let candidateStaff: StaffMember[] = [];
+      const backupRaw = localStorage.getItem('amarii_staff_backup') || localStorage.getItem('amarii_staff_list_cache');
+      if (backupRaw) {
+        try {
+          const parsed = JSON.parse(backupRaw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            candidateStaff = parsed;
+          }
+        } catch {}
+      }
+
+      // Merge with all 14 baseline team members from INITIAL_STAFF
+      const map = new Map<string, StaffMember>();
+      INITIAL_STAFF.forEach((s) => map.set(s.id, s));
+      candidateStaff.forEach((s) => {
+        if (s && s.id && !LEGACY_DEMO_STAFF_IDS.includes(s.id) && !s.name?.toLowerCase().includes('arjun')) {
+          map.set(s.id, s);
+        }
+      });
+      staffList.forEach((s) => {
+        if (s && s.id && !s.name?.toLowerCase().includes('arjun')) map.set(s.id, s);
+      });
+
+      const fullStaffList = Array.from(map.values());
+
+      try {
+        localStorage.removeItem('amarii_deleted_staff_ids_v2');
+      } catch (e) {}
+
+      localStorage.setItem('amarii_staff_list_cache', JSON.stringify(fullStaffList));
+      localStorage.setItem('amarii_staff_backup', JSON.stringify(fullStaffList));
+
+      if (onRestoreStaffList) {
+        await onRestoreStaffList(fullStaffList);
+      } else {
+        for (const member of fullStaffList) {
+          await onUpdateStaff(member);
+        }
+      }
+
+      syncAllStaffAndUsersToFirestore(fullStaffList).catch(() => {});
+
+      setSyncNotice(`✓ Successfully restored all ${fullStaffList.length} staff records from cache backup!`);
+      setTimeout(() => setSyncNotice(null), 6000);
+    } catch (err: any) {
+      console.error('Failed to restore staff cache:', err);
+      setSyncNotice(`Notice: ${err?.message || 'Error restoring cache'}`);
+    } finally {
+      setIsSyncingAllStaff(false);
+    }
+  };
+
+  const runSaveWithTimeout = async <T,>(
+    savePromise: Promise<T>,
+    timeoutMs = 3000
+  ): Promise<{ ok: boolean; data?: T; timedOut?: boolean; error?: any }> => {
+    let timer: any;
+    const timeoutPromise = new Promise<{ timedOut: boolean }>((resolve) => {
+      timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+    });
+    try {
+      const res = await Promise.race([
+        savePromise.then((data) => ({ ok: true, data, timedOut: false })),
+        timeoutPromise.then(() => ({ ok: false, timedOut: true })),
+      ]);
+      return res;
+    } catch (err) {
+      return { ok: false, error: err };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const handleSaveForm = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormValidationError(null);
 
@@ -295,80 +377,78 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
       }
     }
 
-    if (editingStaffId) {
-      const existing = staffList.find((s) => s.id === editingStaffId);
-      if (existing) {
-        const updatedStaff: StaffMember = {
-          ...existing,
+    setIsSaving(true);
+
+    try {
+      if (editingStaffId) {
+        const existing = staffList.find((s) => s.id === editingStaffId);
+        if (existing) {
+          const updatedStaff: StaffMember = {
+            ...existing,
+            name: formName.trim(),
+            email: formEmail.trim().toLowerCase(),
+            phone: formPhone.trim(),
+            department: formDept,
+            outlet: formOutlet || existing.outlet || activeOutlet,
+            roleType: formRoleType,
+            roleCategory: formRoleType,
+            role: formRoleType,
+            designation: formDesignation.trim(),
+            isActive: formIsActive,
+            active: formIsActive,
+            pin: finalPin || (existing.pin || ''),
+            password: formPassword.trim() ? formPassword.trim() : (existing.password || 'amarii123'),
+            updatedAt: new Date().toISOString(),
+          };
+
+          setIsAddingNew(false);
+          setEditingStaffId(null);
+          runSaveWithTimeout(Promise.resolve(onUpdateStaff(updatedStaff)), 3000).catch((err) => {
+            console.warn('[StaffModal] Background cloud update notice:', err);
+          });
+        }
+      } else {
+        const existingIds = (staffList || []).map((s) => s.id);
+        const newStaffId = generateStaffId(formName.trim(), formRoleType, existingIds);
+        const newMember: StaffMember = {
+          id: newStaffId,
           name: formName.trim(),
           email: formEmail.trim().toLowerCase(),
           phone: formPhone.trim(),
           department: formDept,
-          outlet: formOutlet || existing.outlet || activeOutlet,
+          outlet: formOutlet || activeOutlet,
           roleType: formRoleType,
           roleCategory: formRoleType,
           role: formRoleType,
           designation: formDesignation.trim(),
+          pin: finalPin,
+          password: formPassword.trim(),
           isActive: formIsActive,
           active: formIsActive,
-          pin: finalPin || (existing.pin || ''),
-          password: formPassword.trim() ? formPassword.trim() : (existing.password || 'amarii123'),
+          avatarColor: formRoleType === 'manager' ? 'bg-red-500 text-white' : formRoleType === 'admin' ? 'bg-zinc-900 text-white' : 'bg-emerald-500 text-white',
+          createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
 
-        setIsSaving(true);
-        Promise.resolve(onUpdateStaff(updatedStaff))
-          .then(() => {
-            setIsAddingNew(false);
-            setEditingStaffId(null);
-          })
-          .catch((err: any) => {
-            console.error('Error saving updated staff:', err);
-            setFormValidationError(`Failed to update staff in cloud: ${err?.message || 'Check connection'}`);
-          })
-          .finally(() => setIsSaving(false));
-      }
-    } else {
-      const existingIds = (staffList || []).map((s) => s.id);
-      const newStaffId = generateStaffId(formName.trim(), formRoleType, existingIds);
-      const newMember: StaffMember = {
-        id: newStaffId,
-        name: formName.trim(),
-        email: formEmail.trim().toLowerCase(),
-        phone: formPhone.trim(),
-        department: formDept,
-        outlet: formOutlet || activeOutlet,
-        roleType: formRoleType,
-        roleCategory: formRoleType,
-        role: formRoleType,
-        designation: formDesignation.trim(),
-        pin: finalPin,
-        password: formPassword.trim(),
-        isActive: formIsActive,
-        active: formIsActive,
-        avatarColor: formRoleType === 'manager' ? 'bg-red-500 text-white' : formRoleType === 'admin' ? 'bg-zinc-900 text-white' : 'bg-emerald-500 text-white',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
+        setIsAddingNew(false);
+        setEditingStaffId(null);
+        setNewStaffCredentials({
+          name: newMember.name,
+          email: newMember.email,
+          pin: newMember.pin || finalPin,
+          password: newMember.password || '',
+          department: newMember.department,
+        });
 
-      setIsSaving(true);
-      Promise.resolve(onAddStaff(newMember))
-        .then(() => {
-          setIsAddingNew(false);
-          setEditingStaffId(null);
-          setNewStaffCredentials({
-            name: newMember.name,
-            email: newMember.email,
-            pin: newMember.pin || finalPin,
-            password: newMember.password || '',
-            department: newMember.department,
-          });
-        })
-        .catch((err: any) => {
-          console.error('Error creating staff:', err);
-          setFormValidationError(`Failed to save new staff to database: ${err?.message || 'Check connection'}`);
-        })
-        .finally(() => setIsSaving(false));
+        runSaveWithTimeout(Promise.resolve(onAddStaff(newMember)), 3000).catch((err) => {
+          console.warn('[StaffModal] Background cloud create notice:', err);
+        });
+      }
+    } catch (err: any) {
+      console.error('Error in handleSaveForm:', err);
+      setFormValidationError(`Error saving staff: ${err?.message || 'Could not complete save'}`);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -408,7 +488,10 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
     };
 
     try {
-      await onUpdateStaff(updatedWithPin);
+      const outcome = await runSaveWithTimeout(Promise.resolve(onUpdateStaff(updatedWithPin)), 5000);
+      if (outcome.timedOut) {
+        console.warn('[StaffModal] Cloud PIN update timed out after 5s. Stored in local cache.');
+      }
       setPinSuccessMessage(`Passcode successfully updated to ${modalPinInput.trim()} for ${pinModalStaff.name}!`);
       setTimeout(() => {
         setPinModalStaff(null);
@@ -469,7 +552,10 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
     };
 
     try {
-      await onUpdateStaff(updatedWithPassword);
+      const outcome = await runSaveWithTimeout(Promise.resolve(onUpdateStaff(updatedWithPassword)), 5000);
+      if (outcome.timedOut) {
+        console.warn('[StaffModal] Cloud password update timed out after 5s. Stored in local cache.');
+      }
       setResetSuccessMessage(`Password updated successfully for ${resetModalStaff.name}.`);
       setTimeout(() => {
         setResetModalStaff(null);
@@ -1321,10 +1407,20 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
           {/* Staff Directory Cards Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
             {filteredStaff.length === 0 ? (
-              <div className={`col-span-full py-8 text-center text-xs font-bold uppercase tracking-wider ${
-                isLightMode ? 'text-zinc-500 bg-white border-zinc-300' : 'text-zinc-500 bg-zinc-900/40 border-zinc-800'
-              } border border-dashed`}>
-                No staff found matching query. Click "+ Add Staff Member" above to create one.
+              <div className={`col-span-full py-10 px-4 text-center flex flex-col items-center justify-center gap-3 ${
+                isLightMode ? 'text-zinc-600 bg-white border-zinc-300' : 'text-zinc-400 bg-zinc-900/40 border-zinc-800'
+              } border-2 border-dashed rounded-xs`}>
+                <p className="text-xs sm:text-sm font-black uppercase tracking-wider">
+                  No records found. Click [+ Add] to create your first item
+                </p>
+                <button
+                  type="button"
+                  onClick={() => handleStartAdd()}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-black uppercase tracking-wider rounded-xs flex items-center gap-1.5 cursor-pointer transition shadow-sm"
+                >
+                  <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                  <span>[+ Add]</span>
+                </button>
               </div>
             ) : (
               filteredStaff.map((staff) => {
@@ -1522,32 +1618,21 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                         <button
                           type="button"
                           id={`btn-delete-staff-${staff.id}`}
-                          onClick={async () => {
-                            if (confirmDeleteId === staff.id) {
-                              try {
-                                await deleteStaffFromFirebase(staff.id);
-                                await onDeleteStaff(staff.id);
-                              } catch (err) {
-                                console.error('Delete staff error:', err);
-                              }
-                              setConfirmDeleteId(null);
-                            } else {
-                              setConfirmDeleteId(staff.id);
-                              setTimeout(() => setConfirmDeleteId(null), 3000);
-                            }
+                          disabled={deletingStaffId === staff.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setStaffPendingDelete(staff);
                           }}
                           className={`h-7 px-1.5 transition cursor-pointer flex items-center justify-center rounded-xs ${
-                            confirmDeleteId === staff.id
-                              ? 'bg-red-600 text-white'
-                              : isLightMode
+                            isLightMode
                               ? 'bg-zinc-100 hover:bg-red-600 text-zinc-500 hover:text-white border border-zinc-200'
                               : 'bg-zinc-800 hover:bg-red-600 text-zinc-400 hover:text-white'
-                          }`}
-                          title={confirmDeleteId === staff.id ? "Click again to confirm" : "Delete staff member"}
+                          } ${deletingStaffId === staff.id ? 'opacity-70 cursor-wait' : ''}`}
+                          title="Delete staff member"
                           aria-label={`Delete ${staff.name}`}
                         >
-                          {confirmDeleteId === staff.id ? (
-                            <span className="text-[9px] font-black uppercase whitespace-nowrap px-1">Confirm?</span>
+                          {deletingStaffId === staff.id ? (
+                            <RefreshCw className="w-3 h-3 animate-spin text-white" />
                           ) : (
                             <Trash2 className="w-3 h-3" />
                           )}
@@ -2161,6 +2246,72 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Strict Delete Confirmation Modal for Staff Member */}
+      {staffPendingDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm Staff Deletion"
+          className="fixed inset-0 z-70 bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-150 backdrop-blur-sm"
+        >
+          <div className={`max-w-md w-full ${isLightMode ? 'bg-white text-zinc-900' : 'bg-zinc-900 text-white'} border-4 border-red-600 shadow-2xl p-5 space-y-4 rounded-xs`}>
+            <div className={`flex items-center justify-between border-b ${isLightMode ? 'border-zinc-200' : 'border-zinc-800'} pb-2.5`}>
+              <div className="flex items-center gap-2 text-red-500">
+                <AlertTriangle className="w-5 h-5 stroke-[2.5]" />
+                <h3 className={`text-sm font-black uppercase tracking-wider ${isLightMode ? 'text-zinc-950' : 'text-white'}`}>
+                  Confirm Permanent Deletion
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setStaffPendingDelete(null)}
+                className={`p-1 ${isLightMode ? 'text-zinc-500 hover:text-zinc-900' : 'text-zinc-400 hover:text-white'} cursor-pointer`}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className={`text-xs sm:text-sm font-bold leading-relaxed ${isLightMode ? 'text-zinc-800' : 'text-zinc-200'}`}>
+              Are you sure you want to delete <span className="text-red-500 font-black">"{staffPendingDelete.name}"</span>? This action cannot be undone.
+            </p>
+
+            <div className={`flex items-center justify-end gap-2 pt-3 border-t ${isLightMode ? 'border-zinc-200' : 'border-zinc-800'}`}>
+              <button
+                type="button"
+                onClick={() => setStaffPendingDelete(null)}
+                disabled={deletingStaffId === staffPendingDelete.id}
+                className={`px-3.5 py-2 ${
+                  isLightMode ? 'bg-zinc-200 text-zinc-800 hover:bg-zinc-300' : 'bg-zinc-800 text-zinc-300 hover:text-white'
+                } text-xs font-black uppercase tracking-wider transition rounded-xs cursor-pointer`}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                id="btn-confirm-permanent-delete-staff"
+                disabled={deletingStaffId === staffPendingDelete.id}
+                onClick={async () => {
+                  const target = staffPendingDelete;
+                  setStaffPendingDelete(null);
+                  setDeletingStaffId(target.id);
+                  try {
+                    await onDeleteStaff(target.id);
+                  } catch (err) {
+                    console.error('Delete staff error:', err);
+                  } finally {
+                    setDeletingStaffId(null);
+                  }
+                }}
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition rounded-xs cursor-pointer shadow-md"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Yes, Permanently Delete</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

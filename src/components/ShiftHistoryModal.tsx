@@ -407,62 +407,57 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
       </div>
 
       {/* Delete Single Submission Log Safeguard Modal */}
-      {deletingShiftId && (
-        <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4">
-          <div className="w-full max-w-md p-6 bg-zinc-950 text-white border-4 border-red-600 shadow-2xl space-y-4 rounded-lg">
-            <div className="flex items-center gap-2.5 text-red-500">
-              <Trash2 className="w-6 h-6 stroke-[2.5]" />
-              <h3 className="text-base font-black uppercase">Delete Submission Log?</h3>
-            </div>
-            <p className="text-xs text-zinc-300 font-medium leading-relaxed">
-              Are you sure you want to <strong>Delete Submission Log (हटाएं जमा किया गया रिकॉर्ड)</strong>?
-              <br /><br />
-              <span className="text-emerald-400 font-bold">
-                ✓ SAFEGUARD GUARANTEE: This will ONLY delete this specific past submission entry from history.
-                Master station checklists will remain 100% safe & untouched for the next shift.
-              </span>
-            </p>
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setDeletingShiftId(null)}
-                className="px-3.5 py-2 text-xs font-bold uppercase bg-zinc-800 text-zinc-300 hover:bg-zinc-700 rounded transition cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => confirmDeleteShiftDoc(deletingShiftId)}
-                className="px-4 py-2 text-xs font-black uppercase bg-red-600 hover:bg-red-700 text-white rounded shadow transition cursor-pointer"
-              >
-                Delete Submission Log
-              </button>
+      {deletingShiftId && (() => {
+        const targetRec = history.find((r) => r.id === deletingShiftId);
+        const targetLabel = targetRec?.label || targetRec?.tasks?.[0]?.checklistHeader || 'Submission Log';
+        return (
+          <div className="fixed inset-0 z-70 bg-black/85 flex items-center justify-center p-4 animate-in fade-in duration-150">
+            <div className="w-full max-w-md p-6 bg-zinc-950 text-white border-4 border-red-600 shadow-2xl space-y-4 rounded-xs">
+              <div className="flex items-center gap-2.5 text-red-500">
+                <Trash2 className="w-6 h-6 stroke-[2.5]" />
+                <h3 className="text-base font-black uppercase">Confirm Permanent Deletion</h3>
+              </div>
+              <p className="text-xs sm:text-sm text-zinc-200 font-bold leading-relaxed">
+                Are you sure you want to delete <span className="text-red-400 font-black">"{targetLabel}"</span>? This action cannot be undone.
+              </p>
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setDeletingShiftId(null)}
+                  className="px-3.5 py-2 text-xs font-black uppercase bg-zinc-800 text-zinc-300 hover:bg-zinc-700 rounded-xs transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => confirmDeleteShiftDoc(deletingShiftId)}
+                  className="px-4 py-2 text-xs font-black uppercase bg-red-600 hover:bg-red-500 text-white rounded-xs shadow-md flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Yes, Permanently Delete</span>
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Clear All Submission Logs Confirmation Modal */}
       {isConfirmingClearAll && (
-        <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4">
-          <div className="w-full max-w-md p-6 bg-zinc-950 text-white border-4 border-red-600 shadow-2xl space-y-4 rounded-lg">
+        <div className="fixed inset-0 z-70 bg-black/85 flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-md p-6 bg-zinc-950 text-white border-4 border-red-600 shadow-2xl space-y-4 rounded-xs">
             <div className="flex items-center gap-2.5 text-red-500">
               <Trash2 className="w-6 h-6 stroke-[2.5]" />
-              <h3 className="text-base font-black uppercase">Clear All Submission Logs?</h3>
+              <h3 className="text-base font-black uppercase">Confirm Permanent Deletion</h3>
             </div>
-            <p className="text-xs text-zinc-300 font-medium leading-relaxed">
-              Are you sure you want to <strong>Delete Submission Logs (हटाएं जमा किए गए सभी रिकॉर्ड)</strong>?
-              <br /><br />
-              <span className="text-emerald-400 font-bold">
-                ✓ SAFEGUARD GUARANTEE: This only clears past submitted logs.
-                Master station checklists will remain 100% active and untouched for future shifts.
-              </span>
+            <p className="text-xs sm:text-sm text-zinc-200 font-bold leading-relaxed">
+              Are you sure you want to delete <span className="text-red-400 font-black">All Submission Logs ({history.length})</span>? This action cannot be undone.
             </p>
-            <div className="flex items-center justify-end gap-2 pt-2">
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
               <button
                 type="button"
                 onClick={() => setIsConfirmingClearAll(false)}
-                className="px-3.5 py-2 text-xs font-bold uppercase bg-zinc-800 text-zinc-300 hover:bg-zinc-700 rounded transition cursor-pointer"
+                className="px-3.5 py-2 text-xs font-black uppercase bg-zinc-800 text-zinc-300 hover:bg-zinc-700 rounded-xs transition cursor-pointer"
               >
                 Cancel
               </button>
@@ -474,9 +469,10 @@ export const ShiftHistoryModal: React.FC<ShiftHistoryModalProps> = ({
                   setNotice('✓ All submission logs cleared. Master department checklists remain 100% safe & active.');
                   setTimeout(() => setNotice(null), 5000);
                 }}
-                className="px-4 py-2 text-xs font-black uppercase bg-red-600 hover:bg-red-700 text-white rounded shadow transition cursor-pointer"
+                className="px-4 py-2 text-xs font-black uppercase bg-red-600 hover:bg-red-500 text-white rounded-xs shadow-md flex items-center gap-1.5 transition cursor-pointer"
               >
-                Clear All Logs
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Yes, Permanently Delete</span>
               </button>
             </div>
           </div>
