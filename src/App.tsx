@@ -4048,36 +4048,6 @@ export default function App() {
                       );
                     })
                   )}
-
-                  {/* Closing Prompt Bar */}
-                  <footer className="bg-white text-black p-5 sm:p-8 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4 border-2 sm:border-4 border-black">
-                    <div className="text-center sm:text-left">
-                      <div className="flex items-center justify-center sm:justify-start gap-2 mb-1">
-                        <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping" />
-                        <span className="text-xs font-black uppercase tracking-widest text-red-600">
-                          {currentStation === 'Manager' ? 'Shift Sign-Off' : `${currentStation} Station Sign-Off`}
-                        </span>
-                      </div>
-                      <h3 className="text-xl sm:text-3xl font-black uppercase tracking-tight text-black italic">
-                        Which tasks should I mark as completed today?
-                      </h3>
-                      <p className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-zinc-600 mt-1">
-                        Tap sub-task checkboxes, attach mandatory photo proof, add shift notes, or chat with the assistant.
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0 w-full sm:w-auto">
-                      <button
-                        type="button"
-                        id="copy-scannable-btn"
-                        onClick={handleCopyBrief}
-                        className="flex-1 sm:flex-initial px-4 sm:px-5 py-2.5 sm:py-3 bg-zinc-200 hover:bg-zinc-300 text-black text-xs font-black uppercase tracking-tight transition flex items-center justify-center gap-2 cursor-pointer min-h-[44px]"
-                      >
-                        <Share2 className="w-4 h-4 stroke-[2.5]" />
-                        <span>{copied ? 'Copied!' : 'Copy Summary'}</span>
-                      </button>
-                    </div>
-                  </footer>
                 </div>
               </div>
             ) : groupBy === 'department' ? (
@@ -4111,36 +4081,6 @@ export default function App() {
                     />
                   );
                 })}
-
-                {/* Closing Prompt Bar */}
-                <footer className="bg-white text-black p-5 sm:p-8 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4 border-2 sm:border-4 border-black">
-                  <div className="text-center sm:text-left">
-                    <div className="flex items-center justify-center sm:justify-start gap-2 mb-1">
-                      <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping" />
-                      <span className="text-xs font-black uppercase tracking-widest text-red-600">
-                        {currentStation === 'Manager' ? 'Shift Sign-Off' : `${currentStation} Station Sign-Off`}
-                      </span>
-                    </div>
-                    <h3 className="text-xl sm:text-3xl font-black uppercase tracking-tight text-black italic">
-                      Which tasks should I mark as completed today?
-                    </h3>
-                    <p className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-zinc-600 mt-1">
-                      Tap task checkboxes, attach photos/videos, add shift notes, or chat with the assistant.
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0 w-full sm:w-auto">
-                    <button
-                      type="button"
-                      id="copy-scannable-btn"
-                      onClick={handleCopyBrief}
-                      className="flex-1 sm:flex-initial px-4 sm:px-5 py-2.5 sm:py-3 bg-zinc-200 hover:bg-zinc-300 text-black text-xs font-black uppercase tracking-tight transition flex items-center justify-center gap-2 cursor-pointer min-h-[44px]"
-                    >
-                      <Share2 className="w-4 h-4 stroke-[2.5]" />
-                      <span>{copied ? 'Copied!' : 'Copy Summary'}</span>
-                    </button>
-                  </div>
-                </footer>
               </div>
             ) : (
               /* ================= SECONDARY PRIORITY GROUPED VIEW ================= */
