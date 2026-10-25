@@ -1,35 +1,62 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { registerSW } from 'virtual:pwa-register';
 
-export function usePWAUpdate() {
-  const [needRefresh, setNeedRefresh] = useState<boolean>(false);
+export interface UsePWAUpdateReturn {
+  hasNewUpdate: boolean;
+  needRefresh: boolean;
+  offlineReady: boolean;
+  isUpdating: boolean;
+  updateApp: () => Promise<void>;
+  dismissUpdate: () => void;
+  swRegistration: ServiceWorkerRegistration | null;
+}
+
+export function usePWAUpdate(): UsePWAUpdateReturn {
+  const [hasNewUpdate, setHasNewUpdate] = useState<boolean>(false);
   const [offlineReady, setOfflineReady] = useState<boolean>(false);
   const [isUpdating, setIsUpdating] = useState<boolean>(false);
   const [swRegistration, setSwRegistration] = useState<ServiceWorkerRegistration | null>(null);
 
   const updateSWFnRef = useRef<((reloadPage?: boolean) => Promise<void>) | null>(null);
 
+  // 1-Click Instant Update Execution
   const updateApp = useCallback(async () => {
     setIsUpdating(true);
-    console.log('[PWA Update] Updating application to latest build...');
+    console.log('[PWA Update] Executing 1-Click update to latest Vercel deployment...');
 
     try {
-      // 1. If there is a waiting worker, post SKIP_WAITING
+      // 1. Post { type: 'SKIP_WAITING' } to registration.waiting
       if (swRegistration?.waiting) {
+        console.log('[PWA Update] Posting SKIP_WAITING to waiting worker...');
         swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
       }
 
-      // 2. Call updateSW from virtual:pwa-register
+      // 2. Call updateSW from virtual:pwa-register if registered
       if (updateSWFnRef.current) {
         await updateSWFnRef.current(true);
       }
+
+      // 3. Clear temporary asset caches via caches.keys()
+      // NOTE: Strictly does NOT clear localStorage or indexedDB!
+      // User login, staff list, task data, and outlet selections are 100% preserved.
+      if ('caches' in window) {
+        try {
+          const cacheKeys = await window.caches.keys();
+          console.log(`[PWA Update] Clearing ${cacheKeys.length} asset cache(s)...`);
+          await Promise.all(cacheKeys.map((key) => window.caches.delete(key)));
+          console.log('[PWA Update] Asset caches cleared successfully.');
+        } catch (cacheErr) {
+          console.warn('[PWA Update] Cache clearing notice:', cacheErr);
+        }
+      }
     } catch (err) {
-      console.warn('[PWA Update] Error during updateSW invocation:', err);
+      console.warn('[PWA Update] Error during update sequence:', err);
     } finally {
-      // 3. Force reload page to fetch fresh Vercel build
+      // 4. Force-reload the window immediately
+      console.log('[PWA Update] Forcing window reload to load latest deployment...');
       setTimeout(() => {
         window.location.reload();
-      }, 200);
+      }, 150);
     }
   }, [swRegistration]);
 
@@ -42,8 +69,8 @@ export function usePWAUpdate() {
       const updateFn = registerSW({
         immediate: true,
         onNeedRefresh() {
-          console.log('[PWA SW] New content available! Update prompt activated.');
-          setNeedRefresh(true);
+          console.log('[PWA SW] ✨ New version detected in waiting state! Update prompt activated.');
+          setHasNewUpdate(true);
         },
         onOfflineReady() {
           console.log('[PWA SW] App is ready for offline operation.');
@@ -55,6 +82,24 @@ export function usePWAUpdate() {
 
           console.log('[PWA SW] Service worker registered successfully.');
 
+          // Check if there is already a waiting worker
+          if (registration.waiting) {
+            console.log('[PWA SW] Found existing waiting service worker on register.');
+            setHasNewUpdate(true);
+          }
+
+          // Listen for updatefound event
+          registration.addEventListener('updatefound', () => {
+            const installing = registration.installing;
+            if (!installing) return;
+            installing.addEventListener('statechange', () => {
+              if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+                console.log('[PWA SW] New worker installed & waiting!');
+                setHasNewUpdate(true);
+              }
+            });
+          });
+
           // 1. Immediate update check on launch/resume
           registration.update().catch((err) => {
             console.debug('[PWA SW] Launch registration.update notice:', err?.message || err);
@@ -62,7 +107,7 @@ export function usePWAUpdate() {
 
           // 2. Periodic update check every 60 seconds
           const interval = setInterval(() => {
-            console.log('[PWA SW] Polling for Service Worker updates...');
+            console.log('[PWA SW] 60s periodic polling for Service Worker updates...');
             registration.update().catch((err) => {
               console.debug('[PWA SW] Periodic update check notice:', err?.message || err);
             });
@@ -126,11 +171,12 @@ export function usePWAUpdate() {
   }, []);
 
   const dismissUpdate = () => {
-    setNeedRefresh(false);
+    setHasNewUpdate(false);
   };
 
   return {
-    needRefresh,
+    hasNewUpdate,
+    needRefresh: hasNewUpdate, // Backwards-compatible alias
     offlineReady,
     isUpdating,
     updateApp,

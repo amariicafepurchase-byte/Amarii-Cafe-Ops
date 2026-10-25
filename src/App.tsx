@@ -446,6 +446,7 @@ export default function App() {
 
   // PWA Service Worker auto-update hook
   const {
+    hasNewUpdate: swHasNewUpdate,
     needRefresh: swNeedRefresh,
     isUpdating: swIsUpdating,
     updateApp: swUpdateApp,
@@ -3061,11 +3062,20 @@ export default function App() {
   // Gate the entire application with the Login Screen if unauthenticated
   if (!isAuthenticated || !currentUser) {
     return (
-      <LoginScreen
-        isLightMode={isLightMode}
-        staffList={staffList}
-        onUpdateStaff={handleUpdateStaff}
-      />
+      <>
+        <PWAUpdateBanner
+          hasNewUpdate={swHasNewUpdate}
+          needRefresh={swNeedRefresh}
+          isUpdating={swIsUpdating}
+          onUpdate={swUpdateApp}
+          onDismiss={swDismissUpdate}
+        />
+        <LoginScreen
+          isLightMode={isLightMode}
+          staffList={staffList}
+          onUpdateStaff={handleUpdateStaff}
+        />
+      </>
     );
   }
 
@@ -3079,6 +3089,7 @@ export default function App() {
     >
       {/* In-App "New Version Available" Alert & Reload Prompt Banner */}
       <PWAUpdateBanner
+        hasNewUpdate={swHasNewUpdate}
         needRefresh={swNeedRefresh}
         isUpdating={swIsUpdating}
         onUpdate={swUpdateApp}

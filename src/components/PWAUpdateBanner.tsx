@@ -3,13 +3,15 @@ import { Sparkles, RefreshCw, X, ArrowUpCircle } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 
 interface PWAUpdateBannerProps {
-  needRefresh: boolean;
+  hasNewUpdate?: boolean;
+  needRefresh?: boolean;
   isUpdating: boolean;
   onUpdate: () => void;
   onDismiss: () => void;
 }
 
 export const PWAUpdateBanner: React.FC<PWAUpdateBannerProps> = ({
+  hasNewUpdate,
   needRefresh,
   isUpdating,
   onUpdate,
@@ -17,62 +19,62 @@ export const PWAUpdateBanner: React.FC<PWAUpdateBannerProps> = ({
 }) => {
   const { isLightMode } = useTheme();
 
-  if (!needRefresh) return null;
+  const isVisible = Boolean(hasNewUpdate || needRefresh);
+  if (!isVisible) return null;
 
   return (
     <div
       id="pwa-new-version-update-banner"
       role="alert"
       aria-live="assertive"
-      className="fixed top-2 sm:top-4 inset-x-2 sm:inset-x-auto sm:right-6 sm:max-w-md z-[120] animate-in slide-in-from-top duration-300 select-none"
+      className="fixed top-3 inset-x-3 sm:inset-x-auto sm:right-6 sm:max-w-lg z-[9999] animate-in slide-in-from-top-4 duration-300 select-none shadow-2xl"
     >
       <div
-        className={`p-3.5 sm:p-4 rounded-xl border-2 sm:border-4 shadow-2xl backdrop-blur-xl flex items-center justify-between gap-3 text-white transition-all ${
+        className={`p-4 rounded-2xl border-2 sm:border-3 shadow-2xl backdrop-blur-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3.5 text-white transition-all ${
           isLightMode
-            ? 'bg-zinc-950/95 border-purple-500 shadow-purple-950/20'
-            : 'bg-[#151f18]/95 border-purple-400 shadow-purple-900/40'
+            ? 'bg-zinc-950/95 border-emerald-500 shadow-emerald-950/30'
+            : 'bg-[#111c15]/95 border-emerald-400 shadow-emerald-950/60'
         }`}
       >
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center text-white shrink-0 shadow-md animate-pulse">
+        {/* Left icon & text */}
+        <div className="flex items-start gap-3 min-w-0">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-zinc-950 shrink-0 shadow-lg shadow-emerald-500/20 animate-pulse mt-0.5 sm:mt-0">
             <Sparkles className="w-5 h-5 stroke-[2.5]" />
           </div>
 
-          <div className="space-y-0.5 min-w-0">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-xs font-black uppercase tracking-tight text-purple-300">
-                ✨ New Version Available
-              </span>
-              <span className="px-1.5 py-0.2 bg-purple-500/20 text-purple-200 border border-purple-400/40 text-[9px] font-bold uppercase rounded-xs">
-                VERCEL BUILD
+          <div className="space-y-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs sm:text-sm font-black uppercase tracking-tight text-white leading-tight">
+                ✨ Found New Update! A new version of Amarii Café Ops is ready.
               </span>
             </div>
-            <p className="text-[11px] text-zinc-300 font-medium line-clamp-1">
-              Tap Update Now to reload latest features instantly.
+            <p className="text-[11px] sm:text-xs text-zinc-300 font-medium">
+              Clicking will refresh to the latest version immediately.
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Right buttons */}
+        <div className="flex items-center gap-2 w-full sm:w-auto justify-end shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-zinc-800">
           <button
             type="button"
             id="pwa-update-now-action-btn"
             onClick={onUpdate}
             disabled={isUpdating}
-            className={`px-3.5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-black uppercase tracking-wider rounded-lg shadow-md transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 ${
+            className={`flex-1 sm:flex-initial px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-zinc-950 text-xs sm:text-sm font-black uppercase tracking-wide rounded-xl shadow-lg shadow-emerald-500/25 transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-95 ${
               isUpdating ? 'opacity-80 cursor-wait' : ''
             }`}
-            title="Reload page to load latest deployment"
+            title="Reload to load latest deployment"
           >
             {isUpdating ? (
               <>
-                <RefreshCw className="w-4 h-4 animate-spin" />
+                <RefreshCw className="w-4 h-4 animate-spin text-zinc-950 stroke-[2.5]" />
                 <span>Updating...</span>
               </>
             ) : (
               <>
-                <ArrowUpCircle className="w-4 h-4 stroke-[2.5]" />
-                <span>Update Now</span>
+                <ArrowUpCircle className="w-4 h-4 text-zinc-950 stroke-[2.5]" />
+                <span>Update Now (अभी अपडेट करें)</span>
               </>
             )}
           </button>
@@ -80,8 +82,9 @@ export const PWAUpdateBanner: React.FC<PWAUpdateBannerProps> = ({
           <button
             type="button"
             onClick={onDismiss}
-            className="p-1.5 text-zinc-400 hover:text-white transition rounded cursor-pointer"
+            className="p-2 text-zinc-400 hover:text-white transition rounded-lg hover:bg-zinc-800/60 cursor-pointer shrink-0"
             aria-label="Dismiss update banner"
+            title="Dismiss"
           >
             <X className="w-4 h-4" />
           </button>
